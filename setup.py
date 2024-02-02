@@ -14,6 +14,7 @@ from torch.utils.cpp_extension import CUDAExtension, BuildExtension
 import os
 os.path.dirname(os.path.abspath(__file__))
 
+# 在pip install submodule时被执行
 setup(
     name="diff_gaussian_rasterization",
     packages=['diff_gaussian_rasterization'],

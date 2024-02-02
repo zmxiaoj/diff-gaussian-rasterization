@@ -31,7 +31,10 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
     };
     return lambda;
 }
-
+/**
+ * @brief Cuda forward, 在_C扩展中被命名为rasterize_gaussians
+ * 
+ */
 std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
@@ -54,6 +57,7 @@ RasterizeGaussiansCUDA(
 	const bool prefiltered,
 	const bool debug)
 {
+  // check & initialize inputs
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
     AT_ERROR("means3D must have dimensions (num_points, 3)");
   }
@@ -113,7 +117,10 @@ RasterizeGaussiansCUDA(
   }
   return std::make_tuple(rendered, out_color, radii, geomBuffer, binningBuffer, imgBuffer);
 }
-
+/**
+ * @brief Cuda backward, 在_C扩展中被命名为rasterize_gaussians_backward
+ * 
+ */
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(
  	const torch::Tensor& background,
@@ -194,7 +201,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 
   return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_dsh, dL_dscales, dL_drotations);
 }
-
+/**
+ * @brief 在_C扩展中被命名为mark_visible
+ * 
+ * @param means3D 
+ * @param viewmatrix 
+ * @param projmatrix 
+ * @return torch::Tensor 
+ */
 torch::Tensor markVisible(
 		torch::Tensor& means3D,
 		torch::Tensor& viewmatrix,

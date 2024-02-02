@@ -162,7 +162,7 @@ __forceinline__ __device__ bool in_frustum(int idx,
 	}
 	return true;
 }
-
+// 检查CUDA是否出错
 #define CHECK_CUDA(A, debug) \
 A; if(debug) { \
 auto ret = cudaDeviceSynchronize(); \

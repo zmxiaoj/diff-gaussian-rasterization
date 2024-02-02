@@ -168,6 +168,7 @@ class GaussianRasterizationSettings(NamedTuple):
     prefiltered : bool
     debug : bool
 
+# nn.Module的子类
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):
         super().__init__()
@@ -188,6 +189,7 @@ class GaussianRasterizer(nn.Module):
         
         raster_settings = self.raster_settings
 
+        # check parameters
         if (shs is None and colors_precomp is None) or (shs is not None and colors_precomp is not None):
             raise Exception('Please provide excatly one of either SHs or precomputed colors!')
         

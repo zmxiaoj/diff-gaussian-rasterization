@@ -219,22 +219,29 @@ int CudaRasterizer::Rasterizer::forward(
 	int* radii,
 	bool debug)
 {
+	// 计算fx fy
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
 
+	// 初始化geometryBuffer
+	// 获取geometryBuffer的大小
 	size_t chunk_size = required<GeometryState>(P);
+	// 获取geometryBuffer的指针
 	char* chunkptr = geometryBuffer(chunk_size);
+	// 获取GeometryState对象
 	GeometryState geomState = GeometryState::fromChunk(chunkptr, P);
 
 	if (radii == nullptr)
 	{
 		radii = geomState.internal_radii;
 	}
-
+	// tile grid的大小
 	dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
+	// block的大小16x16像素
 	dim3 block(BLOCK_X, BLOCK_Y, 1);
 
 	// Dynamically resize image-based auxiliary buffers during training
+	// 初始化imageBuffer
 	size_t img_chunk_size = required<ImageState>(width * height);
 	char* img_chunkptr = imageBuffer(img_chunk_size);
 	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height);
@@ -245,6 +252,7 @@ int CudaRasterizer::Rasterizer::forward(
 	}
 
 	// Run preprocessing per-Gaussian (transformation, bounding, conversion of SHs to RGB)
+	// 执行preprocess(CHECK_CUDA检查是否成功运行)
 	CHECK_CUDA(FORWARD::preprocess(
 		P, D, M,
 		means3D,
