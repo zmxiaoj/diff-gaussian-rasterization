@@ -45,6 +45,7 @@ __forceinline__ __device__ float ndc2Pix(float v, int S)
 
 __forceinline__ __device__ void getRect(const float2 p, int max_radius, uint2& rect_min, uint2& rect_max, dim3 grid)
 {
+	// [0, grid.x] [0, grid.y]
 	rect_min = {
 		min(grid.x, max((int)0, (int)((p.x - max_radius) / BLOCK_X))),
 		min(grid.y, max((int)0, (int)((p.y - max_radius) / BLOCK_Y)))
@@ -64,7 +65,7 @@ __forceinline__ __device__ float3 transformPoint4x3(const float3& p, const float
 	};
 	return transformed;
 }
-
+// col-major matrix
 __forceinline__ __device__ float4 transformPoint4x4(const float3& p, const float* matrix)
 {
 	float4 transformed = {
@@ -143,6 +144,7 @@ __forceinline__ __device__ bool in_frustum(int idx,
 	bool prefiltered,
 	float3& p_view)
 {
+	// 取出点的原始位置
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 
 	// Bring points to screen space

@@ -95,6 +95,7 @@ __global__ void duplicateWithKeys(
 		// and the value is the ID of the Gaussian. Sorting the values 
 		// with this key yields Gaussian IDs in a list, such that they
 		// are first sorted by tile and then by depth. 
+		// 遍历gauss投影矩形覆盖的每个tile
 		for (int y = rect_min.y; y < rect_max.y; y++)
 		{
 			for (int x = rect_min.x; x < rect_max.x; x++)
@@ -282,12 +283,14 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Compute prefix sum over full list of touched tile counts by Gaussians
 	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
+	// 计算tiles_touched前缀和
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
 
 	// Retrieve total number of Gaussian instances to launch and resize aux buffers
+	// 取出要渲染的高斯数量
 	int num_rendered;
 	CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
-
+	// 根据num_rendered重新分配Buffer
 	size_t binning_chunk_size = required<BinningState>(num_rendered);
 	char* binning_chunkptr = binningBuffer(binning_chunk_size);
 	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered);
@@ -304,7 +307,7 @@ int CudaRasterizer::Rasterizer::forward(
 		radii,
 		tile_grid)
 	CHECK_CUDA(, debug)
-
+	// 找到tile的最高有效位MSB
 	int bit = getHigherMsb(tile_grid.x * tile_grid.y);
 
 	// Sort complete list of (duplicated) Gaussian indices by keys

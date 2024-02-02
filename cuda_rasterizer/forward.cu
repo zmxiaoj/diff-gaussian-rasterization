@@ -107,6 +107,7 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 
 	// Apply low-pass filter: every Gaussian should be at least
 	// one pixel wide/high. Discard 3rd row and column.
+	// 只保留前两维的上三角，增大uncertainty
 	cov[0][0] += 0.3f;
 	cov[1][1] += 0.3f;
 	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
@@ -185,15 +186,19 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Initialize radius and touched tiles to 0. If this isn't changed,
 	// this Gaussian will not be processed further.
+	// 初始化gauss半径和关联的tile数量
 	radii[idx] = 0;
 	tiles_touched[idx] = 0;
 
 	// Perform near culling, quit if outside.
+	// 检查gauss点是否在视锥内
 	float3 p_view;
 	if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
 		return;
 
 	// Transform point by projecting
+	// 将3D点投影到2D平面
+	// 和in_frustum中计算重复
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
@@ -201,6 +206,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// If 3D covariance matrix is precomputed, use it, otherwise compute
 	// from scaling and rotation parameters. 
+	// 计算3D点的Cov(只保留6位浮点信息)
 	const float* cov3D;
 	if (cov3D_precomp != nullptr)
 	{
@@ -226,12 +232,15 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// 2D covariance matrix). Use extent to compute a bounding rectangle
 	// of screen-space tiles that this Gaussian overlaps with. Quit if
 	// rectangle covers 0 tiles. 
+	// 2D Cov的特征方程由求根公式求特征值
 	float mid = 0.5f * (cov.x + cov.z);
 	float lambda1 = mid + sqrt(max(0.1f, mid * mid - det));
 	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
+	// 2D半径为长轴的3倍
 	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
+	// 根据2D中心和半径计算覆盖的tile
 	getRect(point_image, my_radius, rect_min, rect_max, grid);
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
@@ -247,6 +256,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	}
 
 	// Store some useful helper data for the next steps.
+	// 保存gauss点的深度、2D半径、像素坐标、2D Cov inv、透明度、投影矩形面积
 	depths[idx] = p_view.z;
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
@@ -425,6 +435,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	uint32_t* tiles_touched,
 	bool prefiltered)
 {
+	// 对每个gauss点并行处理(保证网格数目覆盖全部P)
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
