@@ -206,7 +206,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// If 3D covariance matrix is precomputed, use it, otherwise compute
 	// from scaling and rotation parameters. 
-	// 计算3D点的Cov(只保留6位浮点信息)
+	// 计算3D点的Cov(只保留6位浮点信息，上三角)
 	const float* cov3D;
 	if (cov3D_precomp != nullptr)
 	{
@@ -283,58 +283,80 @@ renderCUDA(
 	float* __restrict__ out_color)
 {
 	// Identify current tile and associated min/max pixel range.
+	// 获取block的协作组
 	auto block = cg::this_thread_block();
+	// 计算水平方向block数量
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+	// 计算block在在图像中的起始位置
 	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	// 计算block在图像中的结束位置
 	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
+	// block中当前thread对应的像素位置
 	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	// 像素对应的id
 	uint32_t pix_id = W * pix.y + pix.x;
 	float2 pixf = { (float)pix.x, (float)pix.y };
 
 	// Check if this thread is associated with a valid pixel or outside.
+	// check thread对应像素是否合法
 	bool inside = pix.x < W&& pix.y < H;
 	// Done threads can help with fetching, but don't rasterize
 	bool done = !inside;
 
 	// Load start/end range of IDs to process in bit sorted list.
+	// 当前block要处理的起止范围
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+	// 待处理的轮数
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+	// 开始时，待处理的gauss数目
 	int toDo = range.y - range.x;
 
 	// Allocate storage for batches of collectively fetched data.
+	// 分配BLOCK_SIZE的共享内存存储 id xy坐标 2D协方差矩阵的逆 不透明度
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 
 	// Initialize helper variables
+	// 初始化变量
 	float T = 1.0f;
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
 
 	// Iterate over batches until all done or range is complete
+	// 共有toDo要处理的数目，block并行处理
+	// 1个batch处理BLOCK__SIZE，共处理rounds个batch
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// End if entire block votes that it is done rasterizing
+		// 统计block中所有已经done thread数
 		int num_done = __syncthreads_count(done);
+		// 所有线程均已完成处理，结束循环
 		if (num_done == BLOCK_SIZE)
 			break;
 
 		// Collectively fetch per-Gaussian data from global to shared
+		// 当前thread的进度
 		int progress = i * BLOCK_SIZE + block.thread_rank();
+		// 当前thread进度小于待处理的总数目
 		if (range.x + progress < range.y)
 		{
+			// 取出待处理gauss id
 			int coll_id = point_list[range.x + progress];
+			// 更新共享内存变量
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
 		}
+		// 同步所有线程，保证数据存取
 		block.sync();
 
 		// Iterate over current batch
 		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
 		{
 			// Keep track of current position in range
+			// 跟踪当前处理的gauss id
 			contributor++;
 
 			// Resample using conic matrix (cf. "Surface 
@@ -342,7 +364,9 @@ renderCUDA(
 			float2 xy = collected_xy[j];
 			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
 			float4 con_o = collected_conic_opacity[j];
+			// 求guass分布指数
 			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+			// 筛除指数大于0的gauss
 			if (power > 0.0f)
 				continue;
 
@@ -350,9 +374,11 @@ renderCUDA(
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
+			// 对应论文中 Appendix-C-Numerical-Stability
 			float alpha = min(0.99f, con_o.w * exp(power));
 			if (alpha < 1.0f / 255.0f)
 				continue;
+			// alpha-blending中的T
 			float test_T = T * (1 - alpha);
 			if (test_T < 0.0001f)
 			{
@@ -361,6 +387,7 @@ renderCUDA(
 			}
 
 			// Eq. (3) from 3D Gaussian splatting paper.
+			// 计算3通道颜色
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 
@@ -374,6 +401,7 @@ renderCUDA(
 
 	// All threads that treat valid pixel write out their final
 	// rendering data to the frame and auxiliary buffers.
+	// 对合法pixel记录最终结果并增加背景渲染
 	if (inside)
 	{
 		final_T[pix_id] = T;

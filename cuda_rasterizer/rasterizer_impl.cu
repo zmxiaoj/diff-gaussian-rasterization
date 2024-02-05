@@ -116,24 +116,33 @@ __global__ void duplicateWithKeys(
 // Run once per instanced (duplicated) Gaussian ID.
 __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* ranges)
 {
+	// 当前线程的id
 	auto idx = cg::this_grid().thread_rank();
+	// 超出待渲染gauss数的线程不处理
 	if (idx >= L)
 		return;
 
 	// Read tile ID from key. Update start/end of tile range if at limit.
+	// 取出gauss id在排序后list中对应key
 	uint64_t key = point_list_keys[idx];
+	// 取出key高32位对应的tile id
 	uint32_t currtile = key >> 32;
+	// 第1个线程，将当前tile的起始位置设为0
 	if (idx == 0)
 		ranges[currtile].x = 0;
 	else
 	{
+		// 取出前一个tile的id
 		uint32_t prevtile = point_list_keys[idx - 1] >> 32;
+		// 如果不是同一个tile
 		if (currtile != prevtile)
 		{
+			// 更新前一tile的结束位置id和当前tile的起始位置id 
 			ranges[prevtile].y = idx;
 			ranges[currtile].x = idx;
 		}
 	}
+	// 最后一个线程，将当前tile的结束位置设为L
 	if (idx == L - 1)
 		ranges[currtile].y = L;
 }
@@ -311,6 +320,7 @@ int CudaRasterizer::Rasterizer::forward(
 	int bit = getHigherMsb(tile_grid.x * tile_grid.y);
 
 	// Sort complete list of (duplicated) Gaussian indices by keys
+	// 对[0, 32+bit]范围内的[ tile | depth ] key和对应的dublicated Gaussian indices进行排序
 	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
 		binningState.list_sorting_space,
 		binningState.sorting_size,
@@ -318,9 +328,11 @@ int CudaRasterizer::Rasterizer::forward(
 		binningState.point_list_unsorted, binningState.point_list,
 		num_rendered, 0, 32 + bit), debug)
 
+	// 将全部tile的范围内存初始化为0
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
 	// Identify start and end of per-tile workloads in sorted list
+	// 需要渲染的gauss数大于0，确定每个tile在排序列表中的范围
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
 			num_rendered,
@@ -329,6 +341,7 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(, debug)
 
 	// Let each tile blend its range of Gaussians independently in parallel
+	// 按tile并行渲染
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
 	CHECK_CUDA(FORWARD::render(
 		tile_grid, block,
