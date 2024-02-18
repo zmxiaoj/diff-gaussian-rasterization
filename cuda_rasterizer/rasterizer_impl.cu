@@ -321,6 +321,20 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Sort complete list of (duplicated) Gaussian indices by keys
 	// 对[0, 32+bit]范围内的[ tile | depth ] key和对应的dublicated Gaussian indices进行排序
+	// 基数排序默认为升序
+	/**
+	 * @brief cub::DeviceRadixSort::SortPairs 基数排序
+	 * @param[in] list_sorting_space 临时空间
+	 * @param[in] sorting_size 临时空间大小
+	 * @param[in] point_list_keys_unsorted 输入key
+	 * @param[out] point_list_keys 输出key
+	 * @param[in] point_list_unsorted 输入value
+	 * @param[out] point_list 输出value
+	 * @param[in] num_rendered 输入key的数量
+	 * @param[in] begin_bit 开始比特位
+	 * @param[in] end_bit 结束比特位
+	 * 
+	 */
 	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
 		binningState.list_sorting_space,
 		binningState.sorting_size,
