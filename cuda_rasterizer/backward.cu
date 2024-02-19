@@ -414,6 +414,8 @@ renderCUDA(
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dcolors)
 {
+	// 每个block处理一个tile，每个thread处理一个pixel，相同tile中的每个pixel对应gauss实例相同
+	// 将一个block对应的待处理gauss实例相关信息存储在共享内存中，每个thread并行处理一个gauss实例
 	// We rasterize again. Compute necessary block info.
 	// 再次光栅化
 	// 计算block相关信息
@@ -457,7 +459,7 @@ renderCUDA(
 	float accum_rec[C] = { 0 };
 	// 损失关于像素颜色的梯度
 	float dL_dpixel[C];
-	// 取出当前像素颜色通道对应的梯度
+	// 取出损失关于当前像素各个颜色通道对应的梯度
 	if (inside)
 		for (int i = 0; i < C; i++)
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
@@ -472,7 +474,7 @@ renderCUDA(
 	const float ddely_dy = 0.5 * H;
 
 	// Traverse all Gaussians
-	// 遍历全部gauss
+	// 遍历全部gauss实例
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// Load auxiliary data into shared memory, start in the BACK
@@ -485,9 +487,9 @@ renderCUDA(
 		// 在range范围内
 		if (range.x + progress < range.y)
 		{
-			// 取出当前线程处理的gauss id(从后向前)
+			// 取出当前全部线程处理的gauss id(从后向前)
 			const int coll_id = point_list[range.y - progress - 1];
-			// 更新共享内存变量
+			// 更新共享内存记录gauss相关变量
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
@@ -508,7 +510,9 @@ renderCUDA(
 
 			// Compute blending values, as before.
 			const float2 xy = collected_xy[j];
+			// 2D投影空间中像素坐标和gauss中心坐标的差
 			const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+			// 前3维 2D协方差矩阵逆的上三角，第4维 不透明度\alpha
 			const float4 con_o = collected_conic_opacity[j];
 			const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			if (power > 0.0f)
@@ -519,7 +523,7 @@ renderCUDA(
 			if (alpha < 1.0f / 255.0f)
 				continue;
 
-			// 更新前一位置的T
+			// 当前位置对应的T_i(到\alpha_i-1)
 			T = T / (1.f - alpha);
 			// 通道关于颜色的梯度
 			const float dchannel_dcolor = alpha * T;
@@ -544,7 +548,7 @@ renderCUDA(
 				// Update the gradients w.r.t. color of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
-				// 更新损失关于gauss颜色的梯度
+				// 更新损失关于当前颜色通道的梯度
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 			}
 			dL_dalpha *= T;
@@ -554,6 +558,7 @@ renderCUDA(
 
 			// Account for fact that alpha also influences how much of
 			// the background color is added if nothing left to blend
+			// 背景作为最后一个gauss影响alpha
 			float bg_dot_dpixel = 0;
 			for (int i = 0; i < C; i++)
 				bg_dot_dpixel += bg_color[i] * dL_dpixel[i];

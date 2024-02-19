@@ -123,6 +123,7 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 		return;
 
 	// Read tile ID from key. Update start/end of tile range if at limit.
+	// 取出gauss实例的tile id
 	// 取出gauss id在排序后list中对应key
 	uint64_t key = point_list_keys[idx];
 	// 取出key高32位对应的tile id
@@ -247,7 +248,7 @@ int CudaRasterizer::Rasterizer::forward(
 	}
 	// tile grid的大小
 	dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
-	// block的大小16x16像素
+	// block的大小16x16 pixel
 	dim3 block(BLOCK_X, BLOCK_Y, 1);
 
 	// Dynamically resize image-based auxiliary buffers during training
@@ -346,7 +347,7 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
 	// Identify start and end of per-tile workloads in sorted list
-	// 需要渲染的gauss数大于0，确定每个tile在排序列表中的范围
+	// 需要渲染的gauss数大于0，确定每个tile在对应排序列表中gauss实例的范围
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
 			num_rendered,

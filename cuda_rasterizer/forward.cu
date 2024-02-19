@@ -289,7 +289,7 @@ renderCUDA(
 	auto block = cg::this_thread_block();
 	// 计算水平方向block数量
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
-	// 计算block在在图像中的起始位置
+	// 计算block在图像中的起始位置
 	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
 	// 计算block在图像中的结束位置
 	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
@@ -306,7 +306,7 @@ renderCUDA(
 	bool done = !inside;
 
 	// Load start/end range of IDs to process in bit sorted list.
-	// 当前block要处理的起止范围
+	// 索引为当前block在grid中的位置，取出block要处理的gauss实例的起止范围
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
 	// 待处理的轮数
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
@@ -328,7 +328,7 @@ renderCUDA(
 
 	// Iterate over batches until all done or range is complete
 	// 共有toDo要处理的数目，block并行处理
-	// 1个batch处理BLOCK__SIZE，共处理rounds个batch
+	// 1个batch处理BLOCK_SIZE，共处理rounds个batch
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// End if entire block votes that it is done rasterizing
