@@ -268,6 +268,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 // Main rasterization method. Collaboratively works on one tile per
 // block, each thread treats one pixel. Alternates between fetching 
 // and rasterizing data.
+// __launch_bounds__(BLOCK_X * BLOCK_Y) cuda属性，指定1个block中的最大线程数
+// __restrict__ c++关键字，指针是唯一访问指向对象的方式
 template <uint32_t CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(

@@ -415,6 +415,8 @@ renderCUDA(
 	float* __restrict__ dL_dcolors)
 {
 	// We rasterize again. Compute necessary block info.
+	// 再次光栅化
+	// 计算block相关信息
 	auto block = cg::this_thread_block();
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
 	const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
@@ -431,23 +433,31 @@ renderCUDA(
 	bool done = !inside;
 	int toDo = range.y - range.x;
 
+	// 分配BLOCK_SIZE的共享内存存储 id xy坐标 2D协方差矩阵的逆 不透明度
+	// 以及颜色
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 
 	// In the forward, we stored the final value for T, the
-	// product of all (1 - alpha) factors. 
+	// product of all (1 - alpha) factors.
+	// 在forward中保存了T的最终值，即所有(1 - alpha)因子的乘积
+	// 取出像素对应T 
 	const float T_final = inside ? final_Ts[pix_id] : 0;
 	float T = T_final;
 
 	// We start from the back. The ID of the last contributing
 	// Gaussian is known from each pixel from the forward.
+	// 待处理gauss总数
 	uint32_t contributor = toDo;
+	// forward中的最后一个gauss
 	const int last_contributor = inside ? n_contrib[pix_id] : 0;
 
 	float accum_rec[C] = { 0 };
+	// 损失关于像素颜色的梯度
 	float dL_dpixel[C];
+	// 取出当前像素颜色通道对应的梯度
 	if (inside)
 		for (int i = 0; i < C; i++)
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
@@ -457,19 +467,27 @@ renderCUDA(
 
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
+	// 像素坐标关于屏幕坐标的梯度
 	const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
 
 	// Traverse all Gaussians
+	// 遍历全部gauss
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// Load auxiliary data into shared memory, start in the BACK
 		// and load them in revers order.
+		// 将辅助数据加载到共享内存中，从后向前加载
+
 		block.sync();
+		// 当前线程处理的进度
 		const int progress = i * BLOCK_SIZE + block.thread_rank();
+		// 在range范围内
 		if (range.x + progress < range.y)
 		{
+			// 取出当前线程处理的gauss id(从后向前)
 			const int coll_id = point_list[range.y - progress - 1];
+			// 更新共享内存变量
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
@@ -483,6 +501,7 @@ renderCUDA(
 		{
 			// Keep track of current Gaussian ID. Skip, if this one
 			// is behind the last contributor for this pixel.
+			// 从后向前处理gauss，从last_contributor标记的开始(达到阈值后的gauss被跳过)
 			contributor--;
 			if (contributor >= last_contributor)
 				continue;
@@ -500,18 +519,23 @@ renderCUDA(
 			if (alpha < 1.0f / 255.0f)
 				continue;
 
+			// 更新前一位置的T
 			T = T / (1.f - alpha);
+			// 通道关于颜色的梯度
 			const float dchannel_dcolor = alpha * T;
 
 			// Propagate gradients to per-Gaussian colors and keep
 			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
 			// pair).
+			// 损失关于alpha的梯度
 			float dL_dalpha = 0.0f;
 			const int global_id = collected_id[j];
+			// 遍历颜色通道
 			for (int ch = 0; ch < C; ch++)
 			{
 				const float c = collected_colors[ch * BLOCK_SIZE + j];
 				// Update last color (to be used in the next iteration)
+				// 更新上一次颜色，用于下一次迭代
 				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
 				last_color[ch] = c;
 
@@ -520,10 +544,12 @@ renderCUDA(
 				// Update the gradients w.r.t. color of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
+				// 更新损失关于gauss颜色的梯度
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 			}
 			dL_dalpha *= T;
 			// Update last alpha (to be used in the next iteration)
+			// 更新上一次alpha，用于下一次迭代
 			last_alpha = alpha;
 
 			// Account for fact that alpha also influences how much of
