@@ -42,6 +42,7 @@ def rasterize_gaussians(
     )
 
 class _RasterizeGaussians(torch.autograd.Function):
+    # forward的输入参数和backward的返回参数梯度一一对应
     @staticmethod
     def forward(
         ctx,
