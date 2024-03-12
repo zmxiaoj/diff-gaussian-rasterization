@@ -180,6 +180,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	uint32_t* tiles_touched,
 	bool prefiltered)
 {
+	// 每个线程处理一个高斯点
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
 		return;
@@ -262,6 +263,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
 	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] };
+	// 保存当前高斯点覆盖的2D tile数量
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
 
@@ -466,6 +468,8 @@ void FORWARD::preprocess(int P, int D, int M,
 	bool prefiltered)
 {
 	// 对每个gauss点并行处理(保证网格数目覆盖全部P)
+	// (P + 255) / 256 向上取整找到最接近256的倍数
+	// block_size % warp_size(32) = 0
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,

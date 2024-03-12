@@ -67,6 +67,19 @@ __global__ void checkFrustum(int P,
 
 // Generates one key/value pair for all Gaussian / tile overlaps. 
 // Run once per Gaussian (1:N mapping).
+/**
+ * @brief 
+ * 
+ * @param P 
+ * @param points_xy 
+ * @param depths 
+ * @param offsets 
+ * @param gaussian_keys_unsorted [tile|depth]-key
+ * @param gaussian_values_unsorted [idx]-value
+ * @param radii 
+ * @param grid 
+ * @return __global__ 
+ */
 __global__ void duplicateWithKeys(
 	int P,
 	const float2* points_xy,
@@ -82,12 +95,15 @@ __global__ void duplicateWithKeys(
 		return;
 
 	// Generate no key/value pair for invisible Gaussians
+	// 保证高斯点是可见
 	if (radii[idx] > 0)
 	{
 		// Find this Gaussian's offset in buffer for writing keys/values.
+		// 找到高斯对象在buffer中的偏移量，作为存储高斯key、value数组的起始位置
 		uint32_t off = (idx == 0) ? 0 : offsets[idx - 1];
 		uint2 rect_min, rect_max;
 
+		// 获取当前高斯在2D的矩形边界
 		getRect(points_xy[idx], radii[idx], rect_min, rect_max, grid);
 
 		// For each tile that the bounding rect overlaps, emit a 
@@ -95,7 +111,8 @@ __global__ void duplicateWithKeys(
 		// and the value is the ID of the Gaussian. Sorting the values 
 		// with this key yields Gaussian IDs in a list, such that they
 		// are first sorted by tile and then by depth. 
-		// 遍历gauss投影矩形覆盖的每个tile
+		// 遍历高斯投影矩形覆盖的每个tile
+		// 对每个tile和高斯对应的depth组成[tile|depth] key，value为线程idx对应高斯id
 		for (int y = rect_min.y; y < rect_max.y; y++)
 		{
 			for (int x = rect_min.x; x < rect_max.x; x++)
@@ -114,36 +131,46 @@ __global__ void duplicateWithKeys(
 // Check keys to see if it is at the start/end of one tile's range in 
 // the full sorted list. If yes, write start/end of this tile. 
 // Run once per instanced (duplicated) Gaussian ID.
+/**
+ * @brief 确定每个tile内待渲染的高斯id范围
+ * 
+ * @param L [in]
+ * @param point_list_keys [in]
+ * @param ranges [out] 大小为tile数量，
+ * 					   每个对象记录对应tile的起始和结束高斯id
+ * 					   [起始, 结束)
+ * @return  
+ */
 __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* ranges)
 {
-	// 当前线程的id
+	// 当前线程的id对应高斯的id
 	auto idx = cg::this_grid().thread_rank();
-	// 超出待渲染gauss数的线程不处理
+	// 超出待渲染高斯数的线程不处理
 	if (idx >= L)
 		return;
 
 	// Read tile ID from key. Update start/end of tile range if at limit.
-	// 取出gauss实例的tile id
-	// 取出gauss id在排序后list中对应key
+	// 取出高斯id在排序后list中对应key[tile | depth]
 	uint64_t key = point_list_keys[idx];
 	// 取出key高32位对应的tile id
 	uint32_t currtile = key >> 32;
-	// 第1个线程，将当前tile的起始位置设为0
+	// 第1个高斯，将当前tile的起始位置设为0
 	if (idx == 0)
 		ranges[currtile].x = 0;
 	else
 	{
-		// 取出前一个tile的id
+		// 取出前一个id高斯对应的tile id
 		uint32_t prevtile = point_list_keys[idx - 1] >> 32;
-		// 如果不是同一个tile
+		// 不是同一个tile，当前高斯和前一个高斯在不同的tile
 		if (currtile != prevtile)
 		{
-			// 更新前一tile的结束位置id和当前tile的起始位置id 
+			// 更新前一tile的最后一个高斯id
 			ranges[prevtile].y = idx;
+			// 当前tile的起始高斯id 
 			ranges[currtile].x = idx;
 		}
 	}
-	// 最后一个线程，将当前tile的结束位置设为L
+	// 最后1个高斯，将当前tile的结束位置设为L
 	if (idx == L - 1)
 		ranges[currtile].y = L;
 }
@@ -188,7 +215,13 @@ CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, s
 	obtain(chunk, img.ranges, N, 128);
 	return img;
 }
-
+/**
+ * @brief 从内存块中获取数据并将结果处理存储在BinningState对象中
+ * 
+ * @param chunk 
+ * @param P 
+ * @return CudaRasterizer::BinningState 
+ */
 CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chunk, size_t P)
 {
 	BinningState binning;
@@ -294,19 +327,23 @@ int CudaRasterizer::Rasterizer::forward(
 	// Compute prefix sum over full list of touched tile counts by Gaussians
 	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
 	// 计算tiles_touched前缀和
+	// tiles_touched按照线程idx保存对应高斯点在2D屏幕上覆盖的tile数
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
 
 	// Retrieve total number of Gaussian instances to launch and resize aux buffers
-	// 取出要渲染的高斯数量
+	// 取出要渲染的高斯实例，分配辅助buffer
 	int num_rendered;
+	// 取出前缀和数组的最后一个值，表示全部高斯点覆盖的tile总数
+	// 复制给num_rendered，也是要渲染的高斯实例数
 	CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
-	// 根据num_rendered重新分配Buffer
+	// 根据num_rendered重新分配binningBuffer(初始化时已经在gpu上分配内存)
 	size_t binning_chunk_size = required<BinningState>(num_rendered);
 	char* binning_chunkptr = binningBuffer(binning_chunk_size);
 	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered);
 
 	// For each instance to be rendered, produce adequate [ tile | depth ] key 
 	// and corresponding dublicated Gaussian indices to be sorted
+	// 对每个待渲染高斯实例生成[tile|depth]-key [idx]-value
 	duplicateWithKeys << <(P + 255) / 256, 256 >> > (
 		P,
 		geomState.means2D,
@@ -343,11 +380,13 @@ int CudaRasterizer::Rasterizer::forward(
 		binningState.point_list_unsorted, binningState.point_list,
 		num_rendered, 0, 32 + bit), debug)
 
-	// 将全部tile的范围内存初始化为0
+	// 将imgState.ranges的(tile大小 * uint2)范围内存初始化为0
+	// 大小为tile数量，每个对象记录对应tile的起始和结束高斯id
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
 	// Identify start and end of per-tile workloads in sorted list
-	// 需要渲染的gauss数大于0，确定每个tile在对应排序列表中gauss实例的范围
+	// 待渲染的高斯数大于0
+	// 确定每个tile在对应待渲染高斯实例id的范围
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
 			num_rendered,

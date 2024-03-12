@@ -18,6 +18,15 @@
 
 namespace CudaRasterizer
 {
+	/**
+	 * @brief 从内存块中获取一定数量数据，更新内存块的指针，方便下次读取数据
+	 * 
+	 * @tparam T 
+	 * @param chunk 
+	 * @param ptr 
+	 * @param count 
+	 * @param alignment 
+	 */
 	template <typename T>
 	static void obtain(char*& chunk, T*& ptr, std::size_t count, std::size_t alignment)
 	{

@@ -74,6 +74,7 @@ RasterizeGaussiansCUDA(
   
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);
+  // 变量在初始化时就在GPU上分配内存
   torch::Tensor geomBuffer = torch::empty({0}, options.device(device));
   torch::Tensor binningBuffer = torch::empty({0}, options.device(device));
   torch::Tensor imgBuffer = torch::empty({0}, options.device(device));
