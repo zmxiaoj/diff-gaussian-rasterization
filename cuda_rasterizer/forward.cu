@@ -287,7 +287,7 @@ renderCUDA(
 	float* __restrict__ out_color)
 {
 	// Identify current tile and associated min/max pixel range.
-	// 获取block的协作组
+	// 获取block(16x16 pixel)的协作组对象
 	auto block = cg::this_thread_block();
 	// 计算水平方向block数量
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -308,9 +308,10 @@ renderCUDA(
 	bool done = !inside;
 
 	// Load start/end range of IDs to process in bit sorted list.
-	// 索引为当前block在grid中的位置，取出block要处理的gauss实例的起止范围
+	// 索引为当前tile(block)的id
+	// 取出tile要处理的高斯实例的id起止范围
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
-	// 待处理的轮数
+	// 待处理的轮数(向上取整，256的倍数)
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 	// 开始时，待处理的gauss数目
 	int toDo = range.y - range.x;
@@ -340,27 +341,28 @@ renderCUDA(
 		if (num_done == BLOCK_SIZE)
 			break;
 
+		// todo 
 		// Collectively fetch per-Gaussian data from global to shared
 		// 当前thread的进度
 		int progress = i * BLOCK_SIZE + block.thread_rank();
 		// 当前thread进度小于待处理的总数目
 		if (range.x + progress < range.y)
 		{
-			// 取出待处理gauss id
+			// 取出待处理高斯id
 			int coll_id = point_list[range.x + progress];
-			// 更新共享内存变量
+			// 更新各个block对应的共享内存变量
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
 		}
-		// 同步所有线程，保证数据存取
+		// 对同一个block中所用thread进行同步，保证数据存取
 		block.sync();
 
 		// Iterate over current batch
 		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
 		{
 			// Keep track of current position in range
-			// 跟踪当前处理的gauss id
+			// 跟踪当前处理的高斯 id
 			contributor++;
 
 			// Resample using conic matrix (cf. "Surface 
