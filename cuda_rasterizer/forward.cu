@@ -287,7 +287,7 @@ renderCUDA(
 	float* __restrict__ out_color)
 {
 	// Identify current tile and associated min/max pixel range.
-	// 获取block(16x16 pixel)的协作组对象
+	// 获取当前thread所属block(16x16 pixel)的协作组对象
 	auto block = cg::this_thread_block();
 	// 计算水平方向block数量
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -305,25 +305,27 @@ renderCUDA(
 	// check thread对应像素是否合法
 	bool inside = pix.x < W&& pix.y < H;
 	// Done threads can help with fetching, but don't rasterize
+	// 超出图像范围的thread不参与渲染
 	bool done = !inside;
 
 	// Load start/end range of IDs to process in bit sorted list.
 	// 索引为当前tile(block)的id
-	// 取出tile要处理的高斯实例的id起止范围
+	// 从ranges取出tile要处理的高斯实例的id起止范围
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
-	// 待处理的轮数(向上取整，256的倍数)
+	// 待处理的轮数(向上取整)
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
-	// 开始时，待处理的gauss数目
+	// 开始时
 	int toDo = range.y - range.x;
 
 	// Allocate storage for batches of collectively fetched data.
-	// 分配BLOCK_SIZE的共享内存存储 id xy坐标 2D协方差矩阵的逆 不透明度
+	// 对每个block分配共享内存，大小为BLOCK_SIZE(16x16)
+	// 存储，id 2Dxy坐标 (2D协方差矩阵的逆+不透明度)
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 
 	// Initialize helper variables
-	// 初始化变量
+	// 对每个thread，在局部内存，初始化变量
 	float T = 1.0f;
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
@@ -331,34 +333,36 @@ renderCUDA(
 
 	// Iterate over batches until all done or range is complete
 	// 共有toDo要处理的数目，block并行处理
-	// 1个batch处理BLOCK_SIZE，共处理rounds个batch
+	// 1个batch处理block_size，共处理rounds个batch
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// End if entire block votes that it is done rasterizing
-		// 统计block中所有已经done thread数
+		// 统计block中所有已经done的 thread数
+		// 当T达到阈值，会标记为done
 		int num_done = __syncthreads_count(done);
-		// 所有线程均已完成处理，结束循环
+		// block内所有thread均已完成处理，结束循环
 		if (num_done == BLOCK_SIZE)
 			break;
 
-		// todo 
 		// Collectively fetch per-Gaussian data from global to shared
+		// 将每个高斯实例从全局内存取到共享内存
 		// 当前thread的进度
 		int progress = i * BLOCK_SIZE + block.thread_rank();
 		// 当前thread进度小于待处理的总数目
 		if (range.x + progress < range.y)
 		{
-			// 取出待处理高斯id
+			// 对每个thread 取出当前待渲染的高斯id
 			int coll_id = point_list[range.x + progress];
-			// 更新各个block对应的共享内存变量
+			// 对每个thread 更新共享内存，保存高斯id、2D坐标、2D协方差矩阵的逆+不透明度
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
 		}
-		// 对同一个block中所用thread进行同步，保证数据存取
+		// 完成到共享内存的拷贝后，对block中所有thread进行同步
 		block.sync();
 
 		// Iterate over current batch
+		// 对于每个thread遍历本batch中拷贝到共享内存中的高斯id
 		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
 		{
 			// Keep track of current position in range
@@ -410,8 +414,11 @@ renderCUDA(
 	// 对合法pixel记录最终结果并增加背景渲染
 	if (inside)
 	{
+		// 记录pixel最终的透射度T
 		final_T[pix_id] = T;
+		// 记录pixel最后一个渲染高斯id
 		n_contrib[pix_id] = last_contributor;
+		// 分通道计算最后颜色
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 	}

@@ -99,7 +99,8 @@ __global__ void duplicateWithKeys(
 	if (radii[idx] > 0)
 	{
 		// Find this Gaussian's offset in buffer for writing keys/values.
-		// 找到高斯对象在buffer中的偏移量，作为存储高斯key、value数组的起始位置
+		// 找到高斯idx在buffer中的偏移量，作为存储高斯key、value数组的起始位置
+		// offsets为前缀和数组，取出idx前一项的值
 		uint32_t off = (idx == 0) ? 0 : offsets[idx - 1];
 		uint2 rect_min, rect_max;
 
@@ -120,6 +121,7 @@ __global__ void duplicateWithKeys(
 				uint64_t key = y * grid.x + x;
 				key <<= 32;
 				key |= *((uint32_t*)&depths[idx]);
+				// 对于每个thread off是独立的
 				gaussian_keys_unsorted[off] = key;
 				gaussian_values_unsorted[off] = idx;
 				off++;
@@ -143,9 +145,9 @@ __global__ void duplicateWithKeys(
  */
 __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* ranges)
 {
-	// 当前线程的id对应高斯的id
+	// 当前线程id对应1个高斯实例
 	auto idx = cg::this_grid().thread_rank();
-	// 超出待渲染高斯数的线程不处理
+	// idx超出待渲染高斯实例的线程不处理
 	if (idx >= L)
 		return;
 
@@ -279,7 +281,7 @@ int CudaRasterizer::Rasterizer::forward(
 	{
 		radii = geomState.internal_radii;
 	}
-	// tile grid的大小
+	// tile grid的大小 (width向上取整，block_x整数倍，height向上取整，block_y整数倍)
 	dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
 	// block的大小16x16 pixel
 	dim3 block(BLOCK_X, BLOCK_Y, 1);
@@ -326,15 +328,16 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Compute prefix sum over full list of touched tile counts by Gaussians
 	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
-	// 计算tiles_touched前缀和
 	// tiles_touched按照线程idx保存对应高斯点在2D屏幕上覆盖的tile数
+	// 计算tiles_touched前缀和，保存在point_offsets中
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
 
 	// Retrieve total number of Gaussian instances to launch and resize aux buffers
 	// 取出要渲染的高斯实例，分配辅助buffer
 	int num_rendered;
-	// 取出前缀和数组的最后一个值，表示全部高斯点覆盖的tile总数
-	// 复制给num_rendered，也是要渲染的高斯实例数
+	// 取出前缀和数组的最后一位置(geomState.point_offsets + P - 1)
+	// int大小数据，表示全部高斯点覆盖的tile总数
+	// 从gpu拷贝到cpu给num_rendered，也是要渲染的高斯实例数
 	CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
 	// 根据num_rendered重新分配binningBuffer(初始化时已经在gpu上分配内存)
 	size_t binning_chunk_size = required<BinningState>(num_rendered);
@@ -358,7 +361,7 @@ int CudaRasterizer::Rasterizer::forward(
 	int bit = getHigherMsb(tile_grid.x * tile_grid.y);
 
 	// Sort complete list of (duplicated) Gaussian indices by keys
-	// 对[0, 32+bit]范围内的[ tile | depth ] key和对应的dublicated Gaussian indices进行排序
+	// 对[0, 32+bit]范围内的key-[tile|depth]和对应的高斯实例idx进行排序
 	// 基数排序默认为升序
 	/**
 	 * @brief cub::DeviceRadixSort::SortPairs 基数排序
@@ -386,7 +389,7 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Identify start and end of per-tile workloads in sorted list
 	// 待渲染的高斯数大于0
-	// 确定每个tile在对应待渲染高斯实例id的范围
+	// 确定每个tile对应待渲染高斯id的范围
 	if (num_rendered > 0)
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
 			num_rendered,

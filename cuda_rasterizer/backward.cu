@@ -487,7 +487,7 @@ renderCUDA(
 		// 在range范围内
 		if (range.x + progress < range.y)
 		{
-			// 取出当前全部线程处理的gauss id(从后向前)
+			// 每个thread将高斯属性从后向前拷贝到共享内存中
 			const int coll_id = point_list[range.y - progress - 1];
 			// 更新共享内存记录gauss相关变量
 			collected_id[block.thread_rank()] = coll_id;

@@ -90,7 +90,7 @@ RasterizeGaussiansCUDA(
 	  {
 		M = sh.size(1);
       }
-
+	  
 	  rendered = CudaRasterizer::Rasterizer::forward(
 	    geomFunc,
 		binningFunc,
