@@ -120,6 +120,8 @@ __global__ void duplicateWithKeys(
 			{
 				uint64_t key = y * grid.x + x;
 				key <<= 32;
+				// 直接将float转为uint32_t，在当前float标准下保证了序贯性
+				// 跨平台时可能会有问题
 				key |= *((uint32_t*)&depths[idx]);
 				// 对于每个thread off是独立的
 				gaussian_keys_unsorted[off] = key;
@@ -287,7 +289,7 @@ int CudaRasterizer::Rasterizer::forward(
 	dim3 block(BLOCK_X, BLOCK_Y, 1);
 
 	// Dynamically resize image-based auxiliary buffers during training
-	// 初始化imageBuffer
+	// 根据训练图像大小初始化imageBuffer
 	size_t img_chunk_size = required<ImageState>(width * height);
 	char* img_chunkptr = imageBuffer(img_chunk_size);
 	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height);
@@ -384,7 +386,7 @@ int CudaRasterizer::Rasterizer::forward(
 		num_rendered, 0, 32 + bit), debug)
 
 	// 将imgState.ranges的(tile大小 * uint2)范围内存初始化为0
-	// 大小为tile数量，每个对象记录对应tile的起始和结束高斯id
+	// 大小为tile数量，每个对象记录对应tile的起始和结束高斯实例id
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
 	// Identify start and end of per-tile workloads in sorted list

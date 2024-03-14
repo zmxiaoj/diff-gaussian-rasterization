@@ -239,6 +239,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
 	// 2D半径为长轴的3倍
 	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
+	// 从归一化设备坐标[-1, 1]变换到像素坐标[-0.5, S-0.5]
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
 	// 根据2D中心和半径计算覆盖的tile
