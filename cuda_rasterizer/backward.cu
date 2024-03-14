@@ -414,8 +414,6 @@ renderCUDA(
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dcolors)
 {
-	// 每个block处理一个tile，每个thread处理一个pixel，相同tile中的每个pixel对应gauss实例相同
-	// 将一个block对应的待处理gauss实例相关信息存储在共享内存中，每个thread并行处理一个gauss实例
 	// We rasterize again. Compute necessary block info.
 	// 再次光栅化
 	// 计算block相关信息

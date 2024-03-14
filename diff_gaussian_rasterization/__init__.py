@@ -45,7 +45,7 @@ class _RasterizeGaussians(torch.autograd.Function):
     # forward的输入参数和backward的返回参数梯度一一对应
     @staticmethod
     def forward(
-        ctx,
+        ctx, # context 用于保存变量，调用时自动创建传入变量
         means3D,
         means2D,
         sh,
@@ -96,9 +96,13 @@ class _RasterizeGaussians(torch.autograd.Function):
         # 为backward保存相关tensor
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
+        # tensor变量在rasterize_gaussians中被修改
+        # 被保存到ctx后不会被修改
         ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer)
         return color, radii
 
+    # grad_out_color是pytoch自动传入的梯度
+    # _ 表示占位符，forward有两个输出，第二个输出的梯度被忽略
     @staticmethod
     def backward(ctx, grad_out_color, _):
 
@@ -154,7 +158,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             grad_cov3Ds_precomp,
             None,
         )
-
+        # 返回梯度值将更新forward传入tensor参数的grad
         return grads
 
 class GaussianRasterizationSettings(NamedTuple):

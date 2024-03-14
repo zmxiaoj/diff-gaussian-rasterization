@@ -96,6 +96,8 @@ RasterizeGaussiansCUDA(
 		binningFunc,
 		imgFunc,
 	    P, degree, M,
+		// contiguous()保证内存连续
+		// .data<T>()返回一个指向tensor的T类型指针，便于cuda直接访问内存
 		background.contiguous().data<float>(),
 		W, H,
 		means3D.contiguous().data<float>(),
@@ -147,6 +149,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const bool debug) 
 {
   const int P = means3D.size(0);
+  // dL_dout_color的维度为[3, H, W] 第1维不确定
   const int H = dL_dout_color.size(1);
   const int W = dL_dout_color.size(2);
   
@@ -156,7 +159,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	M = sh.size(1);
   }
 
-  // 初始化变量
+  // 在gpu上初始化tensor，backward的输出，与forward输入一一对应
   torch::Tensor dL_dmeans3D = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_dmeans2D = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_dcolors = torch::zeros({P, NUM_CHANNELS}, means3D.options());
