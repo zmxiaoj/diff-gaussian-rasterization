@@ -282,6 +282,7 @@ renderCUDA(
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ features,
 	const float4* __restrict__ conic_opacity,
+	// 输出每个像素对应的最终透射度T
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
@@ -324,6 +325,7 @@ renderCUDA(
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+	// todo 增加深度
 
 	// Initialize helper variables
 	// 对每个thread，在局部内存，初始化变量
@@ -376,6 +378,8 @@ renderCUDA(
 			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
 			float4 con_o = collected_conic_opacity[j];
 			// 求guass分布指数
+			// -1/2 * [dx dy]^T * [cov1 cov2; cov2 cov3] * [dx dy]
+			// = -1/2 * (cov1 * dx^2 + cov3 * dy^2 + 2 * cov2 * dx * dy)
 			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			// 筛除指数大于0的gauss
 			if (power > 0.0f)

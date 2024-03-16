@@ -406,6 +406,7 @@ renderCUDA(
 	const float2* __restrict__ points_xy_image,
 	const float4* __restrict__ conic_opacity,
 	const float* __restrict__ colors,
+	// 输入，记录forward中T的终值
 	const float* __restrict__ final_Ts,
 	const uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ dL_dpixels,
@@ -433,61 +434,67 @@ renderCUDA(
 	bool done = !inside;
 	int toDo = range.y - range.x;
 
-	// 分配BLOCK_SIZE的共享内存存储 id xy坐标 2D协方差矩阵的逆 不透明度
-	// 以及颜色
+	// 分配BLOCK_SIZE的共享内存，保存id、xy坐标、2D协方差矩阵的逆+不透明度、颜色
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+	// 相比forward增加了保存3通道颜色的共享内存
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 
 	// In the forward, we stored the final value for T, the
 	// product of all (1 - alpha) factors.
 	// 在forward中保存了T的最终值，即所有(1 - alpha)因子的乘积
-	// 取出像素对应T 
+	// 每个thread取出合法像素(在图像范围内)对应的终值T 
 	const float T_final = inside ? final_Ts[pix_id] : 0;
 	float T = T_final;
 
 	// We start from the back. The ID of the last contributing
 	// Gaussian is known from each pixel from the forward.
-	// 待处理gauss总数
+	// tile对应的待处理高斯总数
 	uint32_t contributor = toDo;
-	// forward中的最后一个gauss
+	// 取出forward中的最后一个高斯id
 	const int last_contributor = inside ? n_contrib[pix_id] : 0;
 
+	// 初始化累积颜色
 	float accum_rec[C] = { 0 };
-	// 损失关于像素颜色的梯度
+	// 损失关于像素颜色3通道的梯度
 	float dL_dpixel[C];
-	// 取出损失关于当前像素各个颜色通道对应的梯度
+	// 对于图像范围内的thread
 	if (inside)
+		// thread取出损失关于当前像素颜色3通道对应的梯度
 		for (int i = 0; i < C; i++)
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
 
+	// 初始化上一次alpha和3通道颜色
 	float last_alpha = 0;
 	float last_color[C] = { 0 };
 
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
-	// 像素坐标关于屏幕坐标的梯度
+	// 像素坐标关于归一化屏幕坐标的梯度
 	const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
 
 	// Traverse all Gaussians
-	// 遍历全部gauss实例
+	// 遍历全部高斯点
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
 		// Load auxiliary data into shared memory, start in the BACK
 		// and load them in revers order.
 		// 将辅助数据加载到共享内存中，从后向前加载
 
+		// 区别于forward，先进行一次block内thread同步
+		// 因为是从后向前遍历，不同pixel的起点不同，需要同步
 		block.sync();
-		// 当前线程处理的进度
+		// 当前线程处理的进度(从后往前)
 		const int progress = i * BLOCK_SIZE + block.thread_rank();
 		// 在range范围内
 		if (range.x + progress < range.y)
 		{
-			// 每个thread将高斯属性从后向前拷贝到共享内存中
+			// thread从后往前(按照深度)取出高斯id
 			const int coll_id = point_list[range.y - progress - 1];
-			// 更新共享内存记录gauss相关变量
+			// 更新共享内存记录高斯相关变量
+			// 共享内存中高斯属性是连续的从后往前排列(与forward中共享内存排列相反)
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
@@ -497,31 +504,37 @@ renderCUDA(
 		block.sync();
 
 		// Iterate over Gaussians
+		// 每个thread并行遍历共享内存中的高斯
 		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
 		{
 			// Keep track of current Gaussian ID. Skip, if this one
 			// is behind the last contributor for this pixel.
-			// 从后向前处理gauss，从last_contributor标记的开始(达到阈值后的gauss被跳过)
+			// 从后向前处理高斯，小于last_contributor标记的开始
 			contributor--;
 			if (contributor >= last_contributor)
 				continue;
 
 			// Compute blending values, as before.
+			// 取出当前高斯的2D坐标
 			const float2 xy = collected_xy[j];
 			// 2D投影空间中像素坐标和gauss中心坐标的差
 			const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
 			// 前3维 2D协方差矩阵逆的上三角，第4维 不透明度\alpha
 			const float4 con_o = collected_conic_opacity[j];
+			// 2D高斯
+			// -1/2 * [dx dy]^T * [cov1 cov2; cov2 cov3] * [dx dy]
+			// = -1/2 * (cov1 * dx^2 + cov3 * dy^2 + 2 * cov2 * dx * dy)
 			const float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
 			if (power > 0.0f)
 				continue;
 
 			const float G = exp(power);
+			// 验证Numerical-Stability
 			const float alpha = min(0.99f, con_o.w * G);
 			if (alpha < 1.0f / 255.0f)
 				continue;
 
-			// 当前位置对应的T_i(到\alpha_i-1)
+			// 当前位置对应的T_i(透射度累积到\alpha_{i-1})
 			T = T / (1.f - alpha);
 			// 通道关于颜色的梯度
 			const float dchannel_dcolor = alpha * T;
@@ -556,7 +569,7 @@ renderCUDA(
 
 			// Account for fact that alpha also influences how much of
 			// the background color is added if nothing left to blend
-			// 背景作为最后一个gauss影响alpha
+			// 背景作为最后一个高斯影响alpha
 			float bg_dot_dpixel = 0;
 			for (int i = 0; i < C; i++)
 				bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
@@ -600,13 +613,21 @@ void BACKWARD::preprocess(
 	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
 	const glm::vec3* campos,
+	// render计算出，输入梯度
 	const float3* dL_dmean2D,
+	// render计算出，输入梯度
 	const float* dL_dconic,
+	// computeCov2DCUDA，输出梯度
 	glm::vec3* dL_dmean3D,
+	// render计算出，输入梯度
 	float* dL_dcolor,
+	// computeCov2DCUDA，输出梯度
 	float* dL_dcov3D,
+	// preprocessCUDA，输出梯度
 	float* dL_dsh,
+	// preprocessCUDA，输出梯度
 	glm::vec3* dL_dscale,
+	// preprocessCUDA，输出梯度
 	glm::vec4* dL_drot)
 {
 	// Propagate gradients for the path of 2D conic matrix computation. 
@@ -623,8 +644,11 @@ void BACKWARD::preprocess(
 		tan_fovx,
 		tan_fovy,
 		viewmatrix,
+		// render计算出，输入梯度
 		dL_dconic,
+		// 输出梯度
 		(float3*)dL_dmean3D,
+		// 输出梯度
 		dL_dcov3D);
 
 	// Propagate gradients for remaining steps: finish 3D mean gradients,
@@ -641,12 +665,19 @@ void BACKWARD::preprocess(
 		scale_modifier,
 		projmatrix,
 		campos,
+		// render计算出，输入梯度
 		(float3*)dL_dmean2D,
+		// computeCov2DCUDA计算出，输入梯度
 		(glm::vec3*)dL_dmean3D,
+		// render计算出，输入梯度
 		dL_dcolor,
+		// computeCov2DCUDA计算出，输入梯度
 		dL_dcov3D,
+		// 输出梯度
 		dL_dsh,
+		// 输出梯度
 		dL_dscale,
+		// 输出梯度
 		dL_drot);
 }
 
@@ -659,14 +690,19 @@ void BACKWARD::render(
 	const float2* means2D,
 	const float4* conic_opacity,
 	const float* colors,
+	// 输入，记录forward中T的终值
 	const float* final_Ts,
 	const uint32_t* n_contrib,
+	// 输入梯度
 	const float* dL_dpixels,
+	// 输出4个梯度
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
 	float* dL_dopacity,
 	float* dL_dcolors)
 {
+	// grid block_size(16x16)整倍数
+	// block 16x16
 	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
 		ranges,
 		point_list,
@@ -677,7 +713,9 @@ void BACKWARD::render(
 		colors,
 		final_Ts,
 		n_contrib,
+		// 输入梯度
 		dL_dpixels,
+		// 输出4个梯度
 		dL_dmean2D,
 		dL_dconic2D,
 		dL_dopacity,

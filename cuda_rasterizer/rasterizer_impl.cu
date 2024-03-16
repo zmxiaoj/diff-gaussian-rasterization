@@ -410,6 +410,7 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.means2D,
 		feature_ptr,
 		geomState.conic_opacity,
+		// 输出，记录T的终值
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		background,
@@ -439,18 +440,30 @@ void CudaRasterizer::Rasterizer::backward(
 	char* geom_buffer,
 	char* binning_buffer,
 	char* img_buffer,
+	// 输入变量，pytorch自动计算的梯度
 	const float* dL_dpix,
+	// 输出变量，cuda计算的梯度
+	// render返回
 	float* dL_dmean2D,
+	// render返回
 	float* dL_dconic,
+	// render返回
 	float* dL_dopacity,
+	// render返回
 	float* dL_dcolor,
+	// preprocess返回
 	float* dL_dmean3D,
+	// preprocess返回
 	float* dL_dcov3D,
+	// preprocess返回
 	float* dL_dsh,
+	// preprocess返回
 	float* dL_dscale,
+	// preprocess返回
 	float* dL_drot,
 	bool debug)
 {
+	// 从传入变量获取对象
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
@@ -482,12 +495,16 @@ void CudaRasterizer::Rasterizer::backward(
 		geomState.means2D,
 		geomState.conic_opacity,
 		color_ptr,
+		// 输入，记录forward中T的终值
 		imgState.accum_alpha,
 		imgState.n_contrib,
+		// 输入变量
 		dL_dpix,
+		// render 输出4个梯度
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,
 		dL_dopacity,
+		// 不参与preprocess梯度计算
 		dL_dcolor), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
@@ -508,12 +525,20 @@ void CudaRasterizer::Rasterizer::backward(
 		focal_x, focal_y,
 		tan_fovx, tan_fovy,
 		(glm::vec3*)campos,
+		// render计算出，输入preprocess
 		(float3*)dL_dmean2D,
+		// render计算出，输入preprocess
 		dL_dconic,
+		// 输出
 		(glm::vec3*)dL_dmean3D,
+		// render计算出，输入preprocess
 		dL_dcolor,
+		// 输出
 		dL_dcov3D,
+		// 输出
 		dL_dsh,
+		// 输出
 		(glm::vec3*)dL_dscale,
+		// 输出
 		(glm::vec4*)dL_drot), debug)
 }
