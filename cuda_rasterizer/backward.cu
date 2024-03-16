@@ -409,7 +409,9 @@ renderCUDA(
 	// 输入，记录forward中T的终值
 	const float* __restrict__ final_Ts,
 	const uint32_t* __restrict__ n_contrib,
+	// 输入梯度
 	const float* __restrict__ dL_dpixels,
+	// 输出4个梯度
 	float3* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dopacity,
@@ -461,8 +463,10 @@ renderCUDA(
 	float dL_dpixel[C];
 	// 对于图像范围内的thread
 	if (inside)
-		// thread取出损失关于当前像素颜色3通道对应的梯度
+		// 取出thread对应像素 损失关于颜色3通道对应的梯度
 		for (int i = 0; i < C; i++)
+			// dL_dpixels[i * H * W + 0], dL_dpixels[i * H * W + 1], ..., dL_dpixels[i * H * W + W*H-1]
+			// 每行代表一张图像像素，每列代表一个通道
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
 
 	// 初始化上一次alpha和3通道颜色
@@ -531,12 +535,13 @@ renderCUDA(
 			const float G = exp(power);
 			// 验证Numerical-Stability
 			const float alpha = min(0.99f, con_o.w * G);
+			// \alpha小于阈值的高斯被跳过
 			if (alpha < 1.0f / 255.0f)
 				continue;
 
 			// 当前位置对应的T_i(透射度累积到\alpha_{i-1})
 			T = T / (1.f - alpha);
-			// 通道关于颜色的梯度
+			// thread对应像素关于高斯颜色的梯度
 			const float dchannel_dcolor = alpha * T;
 
 			// Propagate gradients to per-Gaussian colors and keep
@@ -544,14 +549,17 @@ renderCUDA(
 			// pair).
 			// 损失关于alpha的梯度
 			float dL_dalpha = 0.0f;
+			// 当前处理的高斯id
 			const int global_id = collected_id[j];
 			// 遍历颜色通道
 			for (int ch = 0; ch < C; ch++)
 			{
+				// thread取出当前pixel当前通道的颜色
 				const float c = collected_colors[ch * BLOCK_SIZE + j];
 				// Update last color (to be used in the next iteration)
-				// 更新上一次颜色，用于下一次迭代
+				// 更新累积颜色
 				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
+				// 更新上一次颜色，用于下一次迭代
 				last_color[ch] = c;
 
 				const float dL_dchannel = dL_dpixel[ch];
@@ -559,7 +567,11 @@ renderCUDA(
 				// Update the gradients w.r.t. color of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
-				// 更新损失关于当前颜色通道的梯度
+
+				// dL_dcolors[global_id * C + 0], dL_dcolors[global_id * C + 1], ..., dL_dcolors[global_id * C + C-1]
+				// 存储形式，每行表示一个高斯颜色，每列表示一个颜色通道				
+				// 更新损失关于当前高斯颜色通道的梯度
+				// 多个pixel关于同一个高斯颜色的梯度进行求和，需要原子操作
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 			}
 			dL_dalpha *= T;

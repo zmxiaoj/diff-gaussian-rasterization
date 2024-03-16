@@ -330,8 +330,11 @@ renderCUDA(
 	// Initialize helper variables
 	// 对每个thread，在局部内存，初始化变量
 	float T = 1.0f;
+	// 每个pixel对应的高斯数目
 	uint32_t contributor = 0;
+	// 每个pixel对应的最后一个高斯id
 	uint32_t last_contributor = 0;
+	// 每个pixel对应的3通道颜色
 	float C[CHANNELS] = { 0 };
 
 	// Iterate over batches until all done or range is complete
