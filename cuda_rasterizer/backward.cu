@@ -457,9 +457,9 @@ renderCUDA(
 	// 取出forward中的最后一个高斯id
 	const int last_contributor = inside ? n_contrib[pix_id] : 0;
 
-	// 初始化累积颜色
+	// 初始化变量，记录从后向前累积的颜色
 	float accum_rec[C] = { 0 };
-	// 损失关于像素颜色3通道的梯度
+	// 取出损失关于像素颜色3通道的梯度
 	float dL_dpixel[C];
 	// 对于图像范围内的thread
 	if (inside)
@@ -469,7 +469,7 @@ renderCUDA(
 			// 每行代表一张图像像素，每列代表一个通道
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
 
-	// 初始化上一次alpha和3通道颜色
+	// 初始化变量，记录上一次alpha和3通道颜色
 	float last_alpha = 0;
 	float last_color[C] = { 0 };
 
@@ -502,6 +502,11 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			// 3通道的颜色分别连续排列在共享内存中
+			// C_ch1_0 C_ch1_1 ... C_ch1_BLOCK_SIZE-1 
+			// C_ch2_0 C_ch2_1 ... C_ch2_BLOCK_SIZE-1 
+			// ... 
+			// C_chC_0 C_chC_1 ... C_chC_BLOCK_SIZE-1
 			for (int i = 0; i < C; i++)
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
 		}
@@ -522,6 +527,7 @@ renderCUDA(
 			// 取出当前高斯的2D坐标
 			const float2 xy = collected_xy[j];
 			// 2D投影空间中像素坐标和gauss中心坐标的差
+			// block内每个thread对应的pixel关于d不同
 			const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
 			// 前3维 2D协方差矩阵逆的上三角，第4维 不透明度\alpha
 			const float4 con_o = collected_conic_opacity[j];
@@ -532,6 +538,7 @@ renderCUDA(
 			if (power > 0.0f)
 				continue;
 
+			// block内每个pixle(thread)对相同高斯计算得到的G不同
 			const float G = exp(power);
 			// 验证Numerical-Stability
 			const float alpha = min(0.99f, con_o.w * G);
@@ -557,7 +564,7 @@ renderCUDA(
 				// thread取出当前pixel当前通道的颜色
 				const float c = collected_colors[ch * BLOCK_SIZE + j];
 				// Update last color (to be used in the next iteration)
-				// 更新累积颜色
+				// 从后向前，对颜色进行alpha composition
 				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
 				// 更新上一次颜色，用于下一次迭代
 				last_color[ch] = c;
@@ -581,13 +588,14 @@ renderCUDA(
 
 			// Account for fact that alpha also influences how much of
 			// the background color is added if nothing left to blend
-			// 背景作为最后一个高斯影响alpha
+			// forward中，最终颜色 = 高斯颜色 + T * 背景颜色
 			float bg_dot_dpixel = 0;
 			for (int i = 0; i < C; i++)
 				bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
+			// T_final为forward保存下T的最终值
 			dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
 
-
+			//  G = exp(-1/2 * (cov1 * dx^2 + cov3 * dy^2 + 2 * cov2 * dx * dy))
 			// Helpful reusable temporary variables
 			const float dL_dG = con_o.w * dL_dalpha;
 			const float gdx = G * d.x;
@@ -600,11 +608,13 @@ renderCUDA(
 			atomicAdd(&dL_dmean2D[global_id].y, dL_dG * dG_ddely * ddely_dy);
 
 			// Update gradients w.r.t. 2D covariance (2x2 matrix, symmetric)
+			// .x .y .z .w
 			atomicAdd(&dL_dconic2D[global_id].x, -0.5f * gdx * d.x * dL_dG);
 			atomicAdd(&dL_dconic2D[global_id].y, -0.5f * gdx * d.y * dL_dG);
 			atomicAdd(&dL_dconic2D[global_id].w, -0.5f * gdy * d.y * dL_dG);
 
 			// Update gradients w.r.t. opacity of the Gaussian
+			// 原子操作，将不同pixel的损失关于同一个高斯的不透明度梯度进行求和
 			atomicAdd(&(dL_dopacity[global_id]), G * dL_dalpha);
 		}
 	}
@@ -698,6 +708,7 @@ void BACKWARD::render(
 	const uint2* ranges,
 	const uint32_t* point_list,
 	int W, int H,
+	// 输入，背景颜色
 	const float* bg_color,
 	const float2* means2D,
 	const float4* conic_opacity,
@@ -719,6 +730,7 @@ void BACKWARD::render(
 		ranges,
 		point_list,
 		W, H,
+		// 输入，背景颜色
 		bg_color,
 		means2D,
 		conic_opacity,

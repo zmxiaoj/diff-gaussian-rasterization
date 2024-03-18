@@ -428,6 +428,7 @@ renderCUDA(
 		n_contrib[pix_id] = last_contributor;
 		// 分通道计算最后颜色
 		for (int ch = 0; ch < CHANNELS; ch++)
+			// 最终颜色 = 高斯颜色 + T * 背景颜色
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 	}
 }
