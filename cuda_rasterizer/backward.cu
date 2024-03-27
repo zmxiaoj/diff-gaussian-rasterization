@@ -406,11 +406,14 @@ renderCUDA(
 	const float2* __restrict__ points_xy_image,
 	const float4* __restrict__ conic_opacity,
 	const float* __restrict__ colors,
+	// 输入，记录高斯的深度
+	const float* __restrict__ depths,
 	// 输入，记录forward中T的终值
 	const float* __restrict__ final_Ts,
 	const uint32_t* __restrict__ n_contrib,
 	// 输入梯度
 	const float* __restrict__ dL_dpixels,
+	const float* __restrict__ dL_ddepths,
 	// 输出4个梯度
 	float3* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
@@ -442,6 +445,8 @@ renderCUDA(
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
 	// 相比forward增加了保存3通道颜色的共享内存
 	__shared__ float collected_colors[C * BLOCK_SIZE];
+	// 增加保存渲染深度图的共享内存
+	__shared__ float collected_depths[BLOCK_SIZE];
 
 	// In the forward, we stored the final value for T, the
 	// product of all (1 - alpha) factors.
@@ -457,21 +462,29 @@ renderCUDA(
 	// 取出forward中的最后一个高斯id
 	const int last_contributor = inside ? n_contrib[pix_id] : 0;
 
-	// 初始化变量，记录从后向前累积的颜色
+	// 初始化辅助变量，记录从后向前累积的颜色
 	float accum_rec[C] = { 0 };
 	// 取出损失关于像素颜色3通道的梯度
 	float dL_dpixel[C];
+	// 初始化辅助变量，记录从后向前累积的深度
+	float accum_depth_rec = 0;
+	// 取出损失关于深度的梯度
+	float dL_ddepth;
 	// 对于图像范围内的thread
 	if (inside)
+	{
 		// 取出thread对应像素 损失关于颜色3通道对应的梯度
 		for (int i = 0; i < C; i++)
 			// dL_dpixels[i * H * W + 0], dL_dpixels[i * H * W + 1], ..., dL_dpixels[i * H * W + W*H-1]
 			// 每行代表一张图像像素，每列代表一个通道
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
-
-	// 初始化变量，记录上一次alpha和3通道颜色
+		dL_ddepth = dL_ddepths[pix_id];
+	}
+	// 初始化变量，记录上一个高斯的alpha和3通道颜色
 	float last_alpha = 0;
 	float last_color[C] = { 0 };
+	// 记录上一个高斯的深度
+	float last_depth = 0;
 
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
@@ -509,6 +522,8 @@ renderCUDA(
 			// C_chC_0 C_chC_1 ... C_chC_BLOCK_SIZE-1
 			for (int i = 0; i < C; i++)
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
+			// 从后向前，取出深度
+			collected_depths[block.thread_rank()] = depths[coll_id];
 		}
 		block.sync();
 
@@ -581,6 +596,13 @@ renderCUDA(
 				// 多个pixel关于同一个高斯颜色的梯度进行求和，需要原子操作
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 			}
+			// thread取出当前pixel对应的渲染深度
+			const float c_d = collected_depths[j];
+			accum_depth_rec = last_alpha * last_depth + (1.f - last_alpha) * accum_depth_rec;
+			last_depth = c_d;
+			// 设计深度损失时增加这一项
+			// dL_dalpha += (c_d - accum_depth_rec) * dL_ddepth;
+
 			dL_dalpha *= T;
 			// Update last alpha (to be used in the next iteration)
 			// 更新上一次alpha，用于下一次迭代
@@ -713,11 +735,14 @@ void BACKWARD::render(
 	const float2* means2D,
 	const float4* conic_opacity,
 	const float* colors,
+	const float* depths,
 	// 输入，记录forward中T的终值
 	const float* final_Ts,
 	const uint32_t* n_contrib,
 	// 输入梯度
 	const float* dL_dpixels,
+	// 输入梯度，损失关于深度的梯度
+	const float* dL_ddepths,
 	// 输出4个梯度
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
@@ -735,10 +760,12 @@ void BACKWARD::render(
 		means2D,
 		conic_opacity,
 		colors,
+		depths,
 		final_Ts,
 		n_contrib,
 		// 输入梯度
 		dL_dpixels,
+		dL_ddepths,
 		// 输出4个梯度
 		dL_dmean2D,
 		dL_dconic2D,

@@ -264,6 +264,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	float* out_color,
+	float* out_depth,
 	int* radii,
 	bool debug)
 {
@@ -402,6 +403,8 @@ int CudaRasterizer::Rasterizer::forward(
 	// Let each tile blend its range of Gaussians independently in parallel
 	// 按tile并行渲染
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
+	// 取出高斯的深度
+	const float* depth_ptr = geomState.depths;
 	CHECK_CUDA(FORWARD::render(
 		tile_grid, block,
 		imgState.ranges,
@@ -409,12 +412,14 @@ int CudaRasterizer::Rasterizer::forward(
 		width, height,
 		geomState.means2D,
 		feature_ptr,
+		depth_ptr,
 		geomState.conic_opacity,
 		// 输出，记录T的终值
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		background,
-		out_color), debug)
+		out_color,
+		out_depth), debug)
 
 	return num_rendered;
 }
@@ -442,6 +447,7 @@ void CudaRasterizer::Rasterizer::backward(
 	char* img_buffer,
 	// 输入变量，pytorch自动计算的梯度
 	const float* dL_dpix,
+	const float* dL_ddepths,
 	// 输出变量，cuda计算的梯度
 	// render返回
 	float* dL_dmean2D,
@@ -485,6 +491,7 @@ void CudaRasterizer::Rasterizer::backward(
 	// opacity and RGB of Gaussians from per-pixel loss gradients.
 	// If we were given precomputed colors and not SHs, use them.
 	const float* color_ptr = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
+	const float* depth_ptr = geomState.depths;
 	CHECK_CUDA(BACKWARD::render(
 		tile_grid,
 		block,
@@ -495,11 +502,13 @@ void CudaRasterizer::Rasterizer::backward(
 		geomState.means2D,
 		geomState.conic_opacity,
 		color_ptr,
+		depth_ptr,
 		// 输入，记录forward中T的终值
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		// 输入变量
 		dL_dpix,
+		dL_ddepths,
 		// render 输出4个梯度
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,

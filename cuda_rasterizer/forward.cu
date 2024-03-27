@@ -281,12 +281,14 @@ renderCUDA(
 	int W, int H,
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ features,
+	const float* __restrict__ depths,
 	const float4* __restrict__ conic_opacity,
 	// 输出每个像素对应的最终透射度T
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
-	float* __restrict__ out_color)
+	float* __restrict__ out_color,
+	float* __restrict__ out_depth)
 {
 	// Identify current tile and associated min/max pixel range.
 	// 获取当前thread所属block(16x16 pixel)的协作组对象
@@ -336,6 +338,8 @@ renderCUDA(
 	uint32_t last_contributor = 0;
 	// 每个pixel对应的3通道颜色
 	float C[CHANNELS] = { 0 };
+	// 每个pixel对应的深度
+	float Depth = { 0 };
 
 	// Iterate over batches until all done or range is complete
 	// 共有toDo要处理的数目，block并行处理
@@ -408,6 +412,8 @@ renderCUDA(
 			// 计算3通道颜色
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+			// 计算深度渲染
+			Depth += depths[collected_id[j]] * alpha * T;
 
 			T = test_T;
 
@@ -430,6 +436,8 @@ renderCUDA(
 		for (int ch = 0; ch < CHANNELS; ch++)
 			// 最终颜色 = 高斯颜色 + T * 背景颜色
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+		// 不考虑背景对深度渲染的影响
+		out_depth[pix_id] = Depth;
 	}
 }
 
@@ -440,11 +448,13 @@ void FORWARD::render(
 	int W, int H,
 	const float2* means2D,
 	const float* colors,
+	const float* depths,
 	const float4* conic_opacity,
 	float* final_T,
 	uint32_t* n_contrib,
 	const float* bg_color,
-	float* out_color)
+	float* out_color,
+	float* out_depth)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -452,11 +462,13 @@ void FORWARD::render(
 		W, H,
 		means2D,
 		colors,
+		depths,
 		conic_opacity,
 		final_T,
 		n_contrib,
 		bg_color,
-		out_color);
+		out_color,
+		out_depth);
 }
 
 void FORWARD::preprocess(int P, int D, int M,
