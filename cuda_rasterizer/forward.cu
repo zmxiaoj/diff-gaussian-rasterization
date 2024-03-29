@@ -71,6 +71,8 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 }
 
 // Forward version of 2D covariance matrix computation
+// 计算Cov2D时，增加了mip系数
+// __device__ float4 computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix)
 __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix)
 {
 	// The following models the steps outlined by equations 29
@@ -107,10 +109,24 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 
 	// Apply low-pass filter: every Gaussian should be at least
 	// one pixel wide/high. Discard 3rd row and column.
+	
+	// // mip-gs 增加mip系数
+	// // det(Cov_2D)
+	// const float det_cov2d = max(1e-6, cov[0][0] * cov[1][1] - cov[0][1] * cov[0][1]); 
+
 	// 只保留前两维的上三角，增大uncertainty
+	// Cov_2D' = Cov_2D + sI
 	cov[0][0] += 0.3f;
 	cov[1][1] += 0.3f;
-	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
+
+	// const float det_cov2d_sI = max(1e-6, cov[0][0] * cov[1][1] - cov[0][1] * cov[1][0]);
+	
+	// float mip = sqrt(det_cov2d / (det_cov2d_sI + 1e-6) + 1e-6);
+	// if (det_cov2d <= 1e-6 || det_cov2d_sI <= 1e-6)
+	// 	mip = 0.0f;
+
+	// return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]), float(mip)};
+	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1])};
 }
 
 // Forward method for converting scale and rotation properties of each
@@ -220,7 +236,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	}
 
 	// Compute 2D screen-space covariance matrix
+	// float4 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
 	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
+
 
 	// Invert covariance (EWA algorithm)
 	float det = (cov.x * cov.z - cov.y * cov.y);
@@ -251,6 +269,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// spherical harmonics coefficients to RGB color.
 	if (colors_precomp == nullptr)
 	{
+		// 从sh转换为rgb
 		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
 		rgb[idx * C + 0] = result.x;
 		rgb[idx * C + 1] = result.y;
@@ -263,7 +282,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
-	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] };
+	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx]};
+	// 增加mip系数
+	// conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] * cov.w };
 	// 保存当前高斯点覆盖的2D tile数量
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }

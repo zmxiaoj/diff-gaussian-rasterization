@@ -152,11 +152,14 @@ __global__ void computeCov2DCUDA(int P,
 	float3* dL_dmeans,
 	float* dL_dcov)
 {
+	// 取出当前thread的id
 	auto idx = cg::this_grid().thread_rank();
+	// 每个thread处理一个高斯，跳过超出idx或半径为0的高斯
 	if (idx >= P || !(radii[idx] > 0))
 		return;
 
 	// Reading location of 3D covariance for this Gaussian
+	// 获取当前thread处理高斯的3D Cov矩阵
 	const float* cov3D = cov3Ds + 6 * idx;
 
 	// Fetch gradients, recompute 2D covariance and relevant 
@@ -192,6 +195,7 @@ __global__ void computeCov2DCUDA(int P,
 	glm::mat3 T = W * J;
 
 	glm::mat3 cov2D = glm::transpose(T) * glm::transpose(Vrk) * T;
+	// TODO: 实现mip系数的backward
 
 	// Use helper variables for 2D covariance entries. More compact.
 	float a = cov2D[0][0] += 0.3f;
