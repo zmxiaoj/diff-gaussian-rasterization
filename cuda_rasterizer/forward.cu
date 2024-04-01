@@ -218,6 +218,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// 和in_frustum中计算重复
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
+	// 透视除法，NDC坐标
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
@@ -257,7 +258,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
 	// 2D半径为长轴的3倍
 	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
-	// 从归一化设备坐标[-1, 1]变换到像素坐标[-0.5, S-0.5]
+	// 视口变换
+	// 将NDC坐标系下，xy平面[-1, 1]^2变换到像素坐标[-0.5, W-0.5]*[-0.5, H-0.5]
+	// -0.5是将像素坐标原点移动到像素中心
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 	uint2 rect_min, rect_max;
 	// 根据2D中心和半径计算覆盖的tile

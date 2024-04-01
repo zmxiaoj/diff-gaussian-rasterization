@@ -493,6 +493,7 @@ renderCUDA(
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
 	// 像素坐标关于归一化屏幕坐标的梯度
+	// 对应视口变换的过程
 	const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
 
