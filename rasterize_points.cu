@@ -35,7 +35,7 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
  * @brief Cuda forward, 在_C扩展中被命名为rasterize_gaussians
  * 
  */
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -71,7 +71,7 @@ RasterizeGaussiansCUDA(
 
   torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
   torch::Tensor out_depth = torch::full({1, H, W}, 0.0, float_opts);
-  torch::Tensor out_weight = torch::full({1, H, W}, 0.0, float_opts);
+  torch::Tensor out_depth_idx = torch::full({1, H, W}, 0, int_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
   
   torch::Device device(torch::kCUDA);
@@ -118,11 +118,11 @@ RasterizeGaussiansCUDA(
 		prefiltered,
 		out_color.contiguous().data<float>(),
 		out_depth.contiguous().data<float>(),
-		out_weight.contiguous().data<float>(),
+		out_depth_idx.contiguous().data<int>(),
 		radii.contiguous().data<int>(),
 		debug);
   }
-  return std::make_tuple(rendered, out_color, out_depth, out_weight, radii, geomBuffer, binningBuffer, imgBuffer);
+  return std::make_tuple(rendered, out_color, out_depth, out_depth_idx, radii, geomBuffer, binningBuffer, imgBuffer);
 }
 /**
  * @brief Cuda backward, 在_C扩展中被命名为rasterize_gaussians_backward

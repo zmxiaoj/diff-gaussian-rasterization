@@ -50,6 +50,7 @@ namespace CudaRasterizer
 			const bool prefiltered,
 			float* out_color,
 			float* out_depth,
+			int* out_depth_idx,
 			int* radii = nullptr,
 			bool debug = false);
 
@@ -73,7 +74,7 @@ namespace CudaRasterizer
 			char* binning_buffer,
 			char* image_buffer,
 			const float* dL_dpix,
-			const float* dLd_depths,
+			const float* dL_depths,
 			float* dL_dmean2D,
 			float* dL_dconic,
 			float* dL_dopacity,

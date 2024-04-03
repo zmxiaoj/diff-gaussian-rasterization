@@ -479,7 +479,7 @@ renderCUDA(
 	// 初始化辅助变量，记录从后向前累积的深度
 	float accum_depth_rec = 0;
 	// 取出损失关于深度的梯度
-	float dLd_ddepth;
+	float dL_ddepth;
 	// 对于图像范围内的thread
 	if (inside)
 	{

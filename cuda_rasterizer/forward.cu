@@ -312,7 +312,8 @@ renderCUDA(
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
-	float* __restrict__ out_depth)
+	float* __restrict__ out_depth,
+	int* __restrict__ out_depth_idx)
 {
 	// Identify current tile and associated min/max pixel range.
 	// 获取当前thread所属block(16x16 pixel)的协作组对象
@@ -351,7 +352,8 @@ renderCUDA(
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
-	// todo 增加深度
+	// 增加共享内存保存深度
+	__shared__ float collected_depth[BLOCK_SIZE];
 
 	// Initialize helper variables
 	// 对每个thread，在局部内存，初始化变量
@@ -362,8 +364,12 @@ renderCUDA(
 	uint32_t last_contributor = 0;
 	// 每个pixel对应的3通道颜色
 	float C[CHANNELS] = { 0 };
-	// 每个pixel对应的深度
-	float Depth = 0;
+	// 每个pixel对应的深度，Mean Depth
+	// float Depth = 0.0f;
+	// Median Depth，hack setting max_depth to 15
+	float Depth = 20.0f;
+	int Depth_median_idx = 0;
+	
 
 	// Iterate over batches until all done or range is complete
 	// 共有toDo要处理的数目，block并行处理
@@ -391,6 +397,7 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			collected_depth[block.thread_rank()] = depths[coll_id];
 		}
 		// 完成到共享内存的拷贝后，对block中所有thread进行同步
 		block.sync();
@@ -436,8 +443,17 @@ renderCUDA(
 			// 计算3通道颜色
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
-			// 计算深度渲染
-			Depth += depths[collected_id[j]] * alpha * T;
+			// 计算深度渲染，Mean depth: 
+			// Depth += depths[collected_id[j]] * alpha * T;
+			// Depth += collected_depth[j] * alpha * T;
+
+			// Median depth:
+			if (T > 0.5 && test_T < 0.5)
+			{
+				Depth = collected_depth[j];
+				// 记录贡献深度的高斯id
+				Depth_median_idx = collected_id[j];
+			}
 
 			T = test_T;
 
@@ -460,8 +476,10 @@ renderCUDA(
 		for (int ch = 0; ch < CHANNELS; ch++)
 			// 最终颜色 = 高斯颜色 + T * 背景颜色
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
-		// 不考虑背景对深度渲染的影响
+		// 记录最终深度
 		out_depth[pix_id] = Depth;
+		// 记录贡献pixel深度的高斯id
+		out_depth_idx[pix_id] = Depth_median_idx;
 	}
 }
 
@@ -478,7 +496,8 @@ void FORWARD::render(
 	uint32_t* n_contrib,
 	const float* bg_color,
 	float* out_color,
-	float* out_depth)
+	float* out_depth,
+	int* out_depth_idx)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -492,7 +511,8 @@ void FORWARD::render(
 		n_contrib,
 		bg_color,
 		out_color,
-		out_depth);
+		out_depth,
+		out_depth_idx);
 }
 
 void FORWARD::preprocess(int P, int D, int M,
