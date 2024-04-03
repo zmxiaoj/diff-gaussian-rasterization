@@ -104,7 +104,7 @@ class _RasterizeGaussians(torch.autograd.Function):
     # grad_out_color是pytoch自动传入的梯度
     # _ 表示占位符，forward有两个输出，第二个输出的梯度被忽略
     @staticmethod
-    def backward(ctx, grad_out_color, grad_out_radii, grad_out_depth):
+    def backward(ctx, grad_out_color, _, grad_out_depth):
 
         # Restore necessary values from context
         num_rendered = ctx.num_rendered

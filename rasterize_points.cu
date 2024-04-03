@@ -71,6 +71,7 @@ RasterizeGaussiansCUDA(
 
   torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
   torch::Tensor out_depth = torch::full({1, H, W}, 0.0, float_opts);
+  torch::Tensor out_weight = torch::full({1, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
   
   torch::Device device(torch::kCUDA);
@@ -117,10 +118,11 @@ RasterizeGaussiansCUDA(
 		prefiltered,
 		out_color.contiguous().data<float>(),
 		out_depth.contiguous().data<float>(),
+		out_weight.contiguous().data<float>(),
 		radii.contiguous().data<int>(),
 		debug);
   }
-  return std::make_tuple(rendered, out_color, out_depth, radii, geomBuffer, binningBuffer, imgBuffer);
+  return std::make_tuple(rendered, out_color, out_depth, out_weight, radii, geomBuffer, binningBuffer, imgBuffer);
 }
 /**
  * @brief Cuda backward, 在_C扩展中被命名为rasterize_gaussians_backward
@@ -152,7 +154,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const bool debug) 
 {
   const int P = means3D.size(0);
-  // dL_dout_color的维度为[3, H, W] 第1维不确定
+  // dL_dout_color的维度为[3, H, W] 
   const int H = dL_dout_color.size(1);
   const int W = dL_dout_color.size(2);
   

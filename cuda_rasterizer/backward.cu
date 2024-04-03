@@ -357,12 +357,18 @@ __global__ void preprocessCUDA(
 	const glm::vec3* scales,
 	const glm::vec4* rotations,
 	const float scale_modifier,
+	// full_proj_transform
 	const float* proj,
 	const glm::vec3* campos,
+	// 输入，来自Backward::render
 	const float3* dL_dmean2D,
+	// 
 	glm::vec3* dL_dmeans,
+	// 输入，来自Backward::render
 	float* dL_dcolor,
+	// 输入，来自computeCov2DCUDA
 	float* dL_dcov3D,
+	// 输出，
 	float* dL_dsh,
 	glm::vec3* dL_dscale,
 	glm::vec4* dL_drot)
@@ -473,7 +479,7 @@ renderCUDA(
 	// 初始化辅助变量，记录从后向前累积的深度
 	float accum_depth_rec = 0;
 	// 取出损失关于深度的梯度
-	float dL_ddepth;
+	float dLd_ddepth;
 	// 对于图像范围内的thread
 	if (inside)
 	{
@@ -662,21 +668,21 @@ void BACKWARD::preprocess(
 	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
 	const glm::vec3* campos,
-	// render计算出，输入梯度
+	// 输入梯度，render计算出
 	const float3* dL_dmean2D,
-	// render计算出，输入梯度
+	// 输入梯度，render计算出
 	const float* dL_dconic,
-	// computeCov2DCUDA，输出梯度
+	// 输出梯度，computeCov2DCUDA
 	glm::vec3* dL_dmean3D,
-	// render计算出，输入梯度
+	// 输入梯度，render计算出
 	float* dL_dcolor,
-	// computeCov2DCUDA，输出梯度
+	// 输出梯度，computeCov2DCUDA
 	float* dL_dcov3D,
-	// preprocessCUDA，输出梯度
+	// 输出梯度，preprocessCUDA
 	float* dL_dsh,
-	// preprocessCUDA，输出梯度
+	// 输出梯度，preprocessCUDA
 	glm::vec3* dL_dscale,
-	// preprocessCUDA，输出梯度
+	// 输出梯度，preprocessCUDA
 	glm::vec4* dL_drot)
 {
 	// Propagate gradients for the path of 2D conic matrix computation. 
@@ -693,7 +699,7 @@ void BACKWARD::preprocess(
 		tan_fovx,
 		tan_fovy,
 		viewmatrix,
-		// render计算出，输入梯度
+		// 输入梯度，render计算出
 		dL_dconic,
 		// 输出梯度
 		(float3*)dL_dmean3D,
@@ -744,9 +750,9 @@ void BACKWARD::render(
 	// 输入，记录forward中T的终值
 	const float* final_Ts,
 	const uint32_t* n_contrib,
-	// 输入梯度
+	// 输入梯度，损失关于rgb图的梯度，pytorch计算得到
 	const float* dL_dpixels,
-	// 输入梯度，损失关于深度的梯度
+	// 输入梯度，损失关于深度图的梯度，pytorch计算得到
 	const float* dL_ddepths,
 	// 输出4个梯度
 	float3* dL_dmean2D,

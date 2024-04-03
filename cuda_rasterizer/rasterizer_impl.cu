@@ -416,6 +416,7 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.conic_opacity,
 		// 输出，记录T的终值
 		imgState.accum_alpha,
+		// 输出，记录每个像素贡献的高斯数
 		imgState.n_contrib,
 		background,
 		out_color,
@@ -502,6 +503,7 @@ void CudaRasterizer::Rasterizer::backward(
 		geomState.means2D,
 		geomState.conic_opacity,
 		color_ptr,
+		// 输入，高斯的深度
 		depth_ptr,
 		// 输入，记录forward中T的终值
 		imgState.accum_alpha,
@@ -513,7 +515,6 @@ void CudaRasterizer::Rasterizer::backward(
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,
 		dL_dopacity,
-		// 不参与preprocess梯度计算
 		dL_dcolor), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance

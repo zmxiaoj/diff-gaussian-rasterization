@@ -363,7 +363,7 @@ renderCUDA(
 	// 每个pixel对应的3通道颜色
 	float C[CHANNELS] = { 0 };
 	// 每个pixel对应的深度
-	float Depth = { 0 };
+	float Depth = 0;
 
 	// Iterate over batches until all done or range is complete
 	// 共有toDo要处理的数目，block并行处理
