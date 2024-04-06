@@ -445,6 +445,7 @@ renderCUDA(
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 			// 计算深度渲染，Mean depth: 
 			// Depth += depths[collected_id[j]] * alpha * T;
+			// 使用共享内存读取深度
 			// Depth += collected_depth[j] * alpha * T;
 
 			// Median depth:

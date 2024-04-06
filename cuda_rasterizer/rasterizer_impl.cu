@@ -451,7 +451,7 @@ void CudaRasterizer::Rasterizer::backward(
 	char* img_buffer,
 	// 输入变量，pytorch自动计算的梯度
 	const float* dL_dpix,
-	const float* dL_ddepths,
+	const float* dL_dpix_depth,
 	// 输出变量，cuda计算的梯度
 	// render返回
 	float* dL_dmean2D,
@@ -513,7 +513,7 @@ void CudaRasterizer::Rasterizer::backward(
 		imgState.n_contrib,
 		// 输入变量
 		dL_dpix,
-		dL_ddepths,
+		dL_dpix_depth,
 		// render 输出4个梯度
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,
@@ -538,7 +538,7 @@ void CudaRasterizer::Rasterizer::backward(
 		focal_x, focal_y,
 		tan_fovx, tan_fovy,
 		(glm::vec3*)campos,
-		// render计算出，输入preprocess
+		// render计算出，输入preprocess，也是输出
 		(float3*)dL_dmean2D,
 		// render计算出，输入preprocess
 		dL_dconic,

@@ -362,7 +362,7 @@ __global__ void preprocessCUDA(
 	const glm::vec3* campos,
 	// 输入，来自Backward::render
 	const float3* dL_dmean2D,
-	// 
+	// 输出，
 	glm::vec3* dL_dmeans,
 	// 输入，来自Backward::render
 	float* dL_dcolor,
@@ -423,7 +423,7 @@ renderCUDA(
 	const uint32_t* __restrict__ n_contrib,
 	// 输入梯度
 	const float* __restrict__ dL_dpixels,
-	const float* __restrict__ dL_ddepths,
+	const float* __restrict__ dL_dpixels_depth,
 	// 输出4个梯度
 	float3* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
@@ -479,7 +479,7 @@ renderCUDA(
 	// 初始化辅助变量，记录从后向前累积的深度
 	float accum_depth_rec = 0;
 	// 取出损失关于深度的梯度
-	float dL_ddepth;
+	float dL_dpixel_depth;
 	// 对于图像范围内的thread
 	if (inside)
 	{
@@ -488,7 +488,7 @@ renderCUDA(
 			// dL_dpixels[i * H * W + 0], dL_dpixels[i * H * W + 1], ..., dL_dpixels[i * H * W + W*H-1]
 			// 每行代表一张图像像素，每列代表一个通道
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
-		dL_ddepth = dL_ddepths[pix_id];
+		dL_dpixel_depth = dL_dpixels_depth[pix_id];
 	}
 	// 初始化变量，记录上一个高斯的alpha和3通道颜色
 	float last_alpha = 0;
@@ -753,7 +753,7 @@ void BACKWARD::render(
 	// 输入梯度，损失关于rgb图的梯度，pytorch计算得到
 	const float* dL_dpixels,
 	// 输入梯度，损失关于深度图的梯度，pytorch计算得到
-	const float* dL_ddepths,
+	const float* dL_dpixels_depth,
 	// 输出4个梯度
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
@@ -776,7 +776,7 @@ void BACKWARD::render(
 		n_contrib,
 		// 输入梯度
 		dL_dpixels,
-		dL_ddepths,
+		dL_dpixels_depth,
 		// 输出4个梯度
 		dL_dmean2D,
 		dL_dconic2D,
