@@ -144,15 +144,19 @@ __forceinline__ __device__ bool in_frustum(int idx,
 	bool prefiltered,
 	float3& p_view)
 {
-	// 取出点的原始位置
+	// 取出世界系下点的原始位置
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 
 	// Bring points to screen space
+	// 将点从世界坐标系转换到裁剪坐标系
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
+	// 透视除法，从裁剪坐标系转换到NDC坐标系
+	// 归一化为齐次坐标，取出x y z
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+	// 将点从世界坐标系转换到相机坐标系
 	p_view = transformPoint4x3(p_orig, viewmatrix);
-
+	// 根据点在相机坐标系的位置判断是否在视锥内
 	if (p_view.z <= 0.2f)// || ((p_proj.x < -1.3 || p_proj.x > 1.3 || p_proj.y < -1.3 || p_proj.y > 1.3)))
 	{
 		if (prefiltered)

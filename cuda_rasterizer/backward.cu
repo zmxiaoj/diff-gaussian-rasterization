@@ -145,11 +145,17 @@ __global__ void computeCov2DCUDA(int P,
 	const float3* means,
 	const int* radii,
 	const float* cov3Ds,
+	// focal_x focal_y
 	const float h_x, float h_y,
 	const float tan_fovx, float tan_fovy,
 	const float* view_matrix,
+	// 输入梯度
 	const float* dL_dconics,
+	// 输入梯度，render计算出，深度损失关于相机坐标系下z的梯度
+	const float* dL_dviewz,
+	// 输出梯度
 	float3* dL_dmeans,
+	// 输出梯度
 	float* dL_dcov)
 {
 	// 取出当前thread的id
@@ -164,24 +170,33 @@ __global__ void computeCov2DCUDA(int P,
 
 	// Fetch gradients, recompute 2D covariance and relevant 
 	// intermediate forward results needed in the backward.
+	// 取出当前thread处理高斯的均值
 	float3 mean = means[idx];
+	// 取出当前thread处理高斯的2D Cov
 	float3 dL_dconic = { dL_dconics[4 * idx], dL_dconics[4 * idx + 1], dL_dconics[4 * idx + 3] };
+	// 将高斯中心从世界坐标系转换到相机坐标系
 	float3 t = transformPoint4x3(mean, view_matrix);
 	
+	// 计算水平和垂直方向的视场角tan范围，考虑有的高斯中心超出视场范围但是半径很大
 	const float limx = 1.3f * tan_fovx;
 	const float limy = 1.3f * tan_fovy;
+	// 分别计算x和y关于z的归一化坐标
 	const float txtz = t.x / t.z;
 	const float tytz = t.y / t.z;
+	// 将x和y的大小限制在视场范围内，并恢复深度
 	t.x = min(limx, max(-limx, txtz)) * t.z;
 	t.y = min(limy, max(-limy, tytz)) * t.z;
 	
+	// 标记梯度是否有效，超出范围的梯度无效
 	const float x_grad_mul = txtz < -limx || txtz > limx ? 0 : 1;
 	const float y_grad_mul = tytz < -limy || tytz > limy ? 0 : 1;
 
+	// 矩阵按照列优先进行存储，J^T
 	glm::mat3 J = glm::mat3(h_x / t.z, 0.0f, -(h_x * t.x) / (t.z * t.z),
 		0.0f, h_y / t.z, -(h_y * t.y) / (t.z * t.z),
 		0, 0, 0);
 
+	// 矩阵按照列优先进行存储，W^T 
 	glm::mat3 W = glm::mat3(
 		view_matrix[0], view_matrix[4], view_matrix[8],
 		view_matrix[1], view_matrix[5], view_matrix[9],
@@ -194,40 +209,71 @@ __global__ void computeCov2DCUDA(int P,
 
 	glm::mat3 T = W * J;
 
+	// 计算投影后的Cov2D = J * W * Cov3D * W^T * J^T
 	glm::mat3 cov2D = glm::transpose(T) * glm::transpose(Vrk) * T;
-	// TODO: 实现mip系数的backward
 
 	// Use helper variables for 2D covariance entries. More compact.
+	// 2D Cov的上三角
 	float a = cov2D[0][0] += 0.3f;
 	float b = cov2D[0][1];
 	float c = cov2D[1][1] += 0.3f;
 
+	// 2D Cov的det
 	float denom = a * c - b * b;
 	float dL_da = 0, dL_db = 0, dL_dc = 0;
 	float denom2inv = 1.0f / ((denom * denom) + 0.0000001f);
+
+	// 2D Cov逆矩阵
+	// [d e; e f] = 1/det*[c -b; -b a]
+	// d=c/(ac-b^2) e=-b/(ac-b^2) f=a/(ac-b^2) 
+	// dd_da=-c^2/(ac-b^2)^2 dd_db=2bc/(ac-b^2)^2        dd_dc=-b^2/(ac-b^2)^2
+	// de_da=bc/(ac-b^2)^2   de_db=(-ac-b^2)/(ac-b^2)^2 de_dc=ab/(ac-b^2)^2
+	// df_da=-b^2/(ac-b^2)^2 df_db=2ab/(ac-b^2)^2       df_dc=-a^2/(ac-b^2)^2
 
 	if (denom2inv != 0)
 	{
 		// Gradients of loss w.r.t. entries of 2D covariance matrix,
 		// given gradients of loss w.r.t. conic matrix (inverse covariance matrix).
 		// e.g., dL / da = dL / d_conic_a * d_conic_a / d_a
+		// 矩阵对称部分*2，e的部分*2
+		// dL_da = dL_dd * dd_da + 2 * dL_de * de_da + dL_df * df_da
 		dL_da = denom2inv * (-c * c * dL_dconic.x + 2 * b * c * dL_dconic.y + (denom - a * c) * dL_dconic.z);
+		// dL_dc = dL_dd * dd_dc + 2 * dL_de * de_dc + dL_df * df_dc
 		dL_dc = denom2inv * (-a * a * dL_dconic.z + 2 * a * b * dL_dconic.y + (denom - a * c) * dL_dconic.x);
+		// dL_db = 2 * (dL_dd * dd_db + 2 * dL_de * de_db + dL_df * df_db)
 		dL_db = denom2inv * 2 * (b * c * dL_dconic.x - (denom + 2 * b * b) * dL_dconic.y + a * b * dL_dconic.z);
 
 		// Gradients of loss L w.r.t. each 3D covariance matrix (Vrk) entry, 
 		// given gradients w.r.t. 2D covariance matrix (diagonal).
 		// cov2D = transpose(T) * transpose(Vrk) * T;
+		// Cov2D = [a b; c d]
+		// Cov3D = [0 1 2; 1 3 4; 2 4 5]
+		// T = [0 1 2; 3 4 5; 6 7 8]
+		// a=C0*T0^2  +2C1*T0*T1        +2C2*T0*T2        +C3*T1^2  +2C4*T1*T2        +C5*T2^2
+		// b=C0*T0*T3 +C1*(T0*T4+T1*T3) +C2*(T0*T5+T2*T3) +C3*T1*T4 +C4*(T1*T5+T2*T4) +C5*T2*T5
+		// c=C0*T3^2  +2C1*T3*T4        +2C2*T3*T5        +C3*T4^2  +2C4*T4*T5        +C5*T5^2
+		// dL_dC0 = dL_da * da_dC0 + dL_db * db_dC0 + dL_dc * dc_dC0
+		//        = T0^2 * dL_da + T0 * T3 * dL_db + T3^2 * dL_dc
 		dL_dcov[6 * idx + 0] = (T[0][0] * T[0][0] * dL_da + T[0][0] * T[1][0] * dL_db + T[1][0] * T[1][0] * dL_dc);
+		// dL_dC3 = dL_da * da_dC3 + dL_db * db_dC3 + dL_dc * dc_dC3
+		//        = T1^2 * dL_da + T1 * T4 * dL_db + T4^2 * dL_dc
 		dL_dcov[6 * idx + 3] = (T[0][1] * T[0][1] * dL_da + T[0][1] * T[1][1] * dL_db + T[1][1] * T[1][1] * dL_dc);
+		// dL_dC5 = dL_da * da_dC5 + dL_db * db_dC5 + dL_dc * dc_dC5
+		//        = T2^2 * dL_da + T2 * T5 * dL_db + T5^2 * dL_dc
 		dL_dcov[6 * idx + 5] = (T[0][2] * T[0][2] * dL_da + T[0][2] * T[1][2] * dL_db + T[1][2] * T[1][2] * dL_dc);
 
 		// Gradients of loss L w.r.t. each 3D covariance matrix (Vrk) entry, 
 		// given gradients w.r.t. 2D covariance matrix (off-diagonal).
 		// Off-diagonal elements appear twice --> double the gradient.
 		// cov2D = transpose(T) * transpose(Vrk) * T;
+		// dL_dC1 = dL_da * da_dC1 + dL_db * db_dC1 + dL_dc * dc_dC1
+		//        = 2 * T0 * T1 * dL_da + (T0 * T4 + T1 * T3) * dL_db + 2 * T3 * T4 * dL_dc
 		dL_dcov[6 * idx + 1] = 2 * T[0][0] * T[0][1] * dL_da + (T[0][0] * T[1][1] + T[0][1] * T[1][0]) * dL_db + 2 * T[1][0] * T[1][1] * dL_dc;
+		// dL_dC2 = dL_da * da_dC2 + dL_db * db_dC2 + dL_dc * dc_dC2
+		//        = 2 * T0 * T2 * dL_da + (T0 * T5 + T2 * T3) * dL_db + 2 * T3 * T5 * dL_dc
 		dL_dcov[6 * idx + 2] = 2 * T[0][0] * T[0][2] * dL_da + (T[0][0] * T[1][2] + T[0][2] * T[1][0]) * dL_db + 2 * T[1][0] * T[1][2] * dL_dc;
+		// dL_dC4 = dL_da * da_dC4 + dL_db * db_dC4 + dL_dc * dc_dC4
+		//        = 2 * T1 * T2 * dL_da + (T1 * T5 + T2 * T4) * dL_db + 2 * T4 * T5 * dL_dc
 		dL_dcov[6 * idx + 4] = 2 * T[0][2] * T[0][1] * dL_da + (T[0][1] * T[1][2] + T[0][2] * T[1][1]) * dL_db + 2 * T[1][1] * T[1][2] * dL_dc;
 	}
 	else
@@ -238,37 +284,88 @@ __global__ void computeCov2DCUDA(int P,
 
 	// Gradients of loss w.r.t. upper 2x3 portion of intermediate matrix T
 	// cov2D = transpose(T) * transpose(Vrk) * T;
+	// a=C0*T0^2  +2C1*T0*T1        +2C2*T0*T2        +C3*T1^2  +2C4*T1*T2        +C5*T2^2
+	// b=C0*T0*T3 +C1*(T0*T4+T1*T3) +C2*(T0*T5+T2*T3) +C3*T1*T4 +C4*(T1*T5+T2*T4) +C5*T2*T5
+	// c=C0*T3^2  +2C1*T3*T4        +2C2*T3*T5        +C3*T4^2  +2C4*T4*T5        +C5*T5^2
+	// Cov 2D与T的第3行无关，只计算损失关于T前两行的梯度
+	// dL_dT0 = 2 * (T0 * C0 + 2 * T1 * C1 + 2 * T2 * C2) * dL_da + (T3 * C0 + T4 * C1 + T5 * C2) * dL_db
 	float dL_dT00 = 2 * (T[0][0] * Vrk[0][0] + T[0][1] * Vrk[0][1] + T[0][2] * Vrk[0][2]) * dL_da +
 		(T[1][0] * Vrk[0][0] + T[1][1] * Vrk[0][1] + T[1][2] * Vrk[0][2]) * dL_db;
+	// dL_dT1 = 2 * (T0 * C1 + 2 * T1 * C3 + 2 * T2 * C4) * dL_da + (T3 * C1 + T4 * C3 + T5 * C4) * dL_db
 	float dL_dT01 = 2 * (T[0][0] * Vrk[1][0] + T[0][1] * Vrk[1][1] + T[0][2] * Vrk[1][2]) * dL_da +
 		(T[1][0] * Vrk[1][0] + T[1][1] * Vrk[1][1] + T[1][2] * Vrk[1][2]) * dL_db;
+	// dL_dT2 = 2 * (T0 * C2 + 2 * T1 * C4 + 2 * T2 * C5) * dL_da + (T3 * C2 + T4 * C4 + T5 * C5) * dL_db
 	float dL_dT02 = 2 * (T[0][0] * Vrk[2][0] + T[0][1] * Vrk[2][1] + T[0][2] * Vrk[2][2]) * dL_da +
 		(T[1][0] * Vrk[2][0] + T[1][1] * Vrk[2][1] + T[1][2] * Vrk[2][2]) * dL_db;
+	// dL_dT3 = (T0 * C0 + 2 * T1 * C1 + 2 * T2 * C2) * dL_db + 2 * (T3 * C0 + T4 * C1 + T5 * C2) * dL_dc
 	float dL_dT10 = 2 * (T[1][0] * Vrk[0][0] + T[1][1] * Vrk[0][1] + T[1][2] * Vrk[0][2]) * dL_dc +
 		(T[0][0] * Vrk[0][0] + T[0][1] * Vrk[0][1] + T[0][2] * Vrk[0][2]) * dL_db;
+	// dL_dT4 = (T0 * C1 + 2 * T1 * C3 + 2 * T2 * C4) * dL_db + 2 * (T3 * C1 + T4 * C3 + T5 * C4) * dL_dc
 	float dL_dT11 = 2 * (T[1][0] * Vrk[1][0] + T[1][1] * Vrk[1][1] + T[1][2] * Vrk[1][2]) * dL_dc +
 		(T[0][0] * Vrk[1][0] + T[0][1] * Vrk[1][1] + T[0][2] * Vrk[1][2]) * dL_db;
+	// dL_dT5 = (T0 * C2 + 2 * T1 * C4 + 2 * T2 * C5) * dL_db + 2 * (T3 * C2 + T4 * C4 + T5 * C5) * dL_dc
 	float dL_dT12 = 2 * (T[1][0] * Vrk[2][0] + T[1][1] * Vrk[2][1] + T[1][2] * Vrk[2][2]) * dL_dc +
 		(T[0][0] * Vrk[2][0] + T[0][1] * Vrk[2][1] + T[0][2] * Vrk[2][2]) * dL_db;
 
 	// Gradients of loss w.r.t. upper 3x2 non-zero entries of Jacobian matrix
-	// T = W * J
+	// T = W * J => 实际上是T^T = W^T * J^T => T = J * W
+	// T = [W0 * J0 + W3 * J1 + W6 * J2; W1 * J0 + W4 * J1 + W7 * J2; W2 * J0 + W5 * J1 + W8 * J2]
+	//   = [W0 * J3 + W3 * J4 + W6 * J5; W1 * J3 + W4 * J4 + W7 * J5; W2 * J3 + W5 * J4 + W8 * J5]
+	//   = [W0 * J6 + W3 * J7 + W6 * J8; W1 * J6 + W4 * J7 + W7 * J8; W2 * J6 + W5 * J7 + W8 * J8]
+	// 只关心T的前两行
+	// J1 = 0, J3 = 0，损失关于J1 J3的梯度为0
+	// dL_dJ0 = dL_dT0 * dT0_dJ0 + dL_dT1 * dT1_dJ0 + dL_dT2 * dT2_dJ0
+	//        = W0 * dL_dT0 + W1 * dL_dT1 + W2 * dL_dT2
 	float dL_dJ00 = W[0][0] * dL_dT00 + W[0][1] * dL_dT01 + W[0][2] * dL_dT02;
+	// dL_dJ2 = dL_dT0 * dT0_dJ2 + dL_dT1 * dT1_dJ2 + dL_dT2 * dT2_dJ2
+	//        = W6 * dL_dT0 + W7 * dL_dT1 + W8 * dL_dT2
 	float dL_dJ02 = W[2][0] * dL_dT00 + W[2][1] * dL_dT01 + W[2][2] * dL_dT02;
+	// dL_dJ4 = dL_dT3 * dT3_dJ4 + dL_dT4 * dT4_dJ4 + dL_dT5 * dT5_dJ4
+	//        = W3 * dL_dT3 + W4 * dL_dT4 + W5 * dL_dT5
 	float dL_dJ11 = W[1][0] * dL_dT10 + W[1][1] * dL_dT11 + W[1][2] * dL_dT12;
+	// dL_dJ5 = dL_dT3 * dT3_dJ5 + dL_dT4 * dT4_dJ5 + dL_dT5 * dT5_dJ5
+	//        = W6 * dL_dT3 + W7 * dL_dT4 + W8 * dL_dT5
 	float dL_dJ12 = W[2][0] * dL_dT10 + W[2][1] * dL_dT11 + W[2][2] * dL_dT12;
 
+	// h_x = focal_x, h_y = focal_y
+	// J0 = fx / z, J1 = 0, J2 = -fx * x / z^2
+	// J3 = 0, J4 = fy / z, J5 = -fy * y / z^2
+	// dJ0_dx = 0, dJ2_dx = -fx / z^2, dJ4_dx = 0, dJ5_dx = 0
+	// dJ0_dy = 0, dJ2_dy = 0, dJ4_dy = 0, dJ5_dy = -fy / z^2
+	// dJ0_dz = -fx / z^2, dJ2_dz = 2fx * x / z^3, dJ4_dz = -fy / z^2, dJ5_dz = 2fy * y / z^3
 	float tz = 1.f / t.z;
 	float tz2 = tz * tz;
 	float tz3 = tz2 * tz;
 
 	// Gradients of loss w.r.t. transformed Gaussian mean t
+	// dL_dtx = dL_dJ0 * dJ0_dx + dL_dJ2 * dJ2_dx + dL_dJ4 * dJ4_dx + dL_dJ5 * dJ5_dx
+	//        = -fx / z^2 * dL_dJ2
 	float dL_dtx = x_grad_mul * -h_x * tz2 * dL_dJ02;
+	// dL_dty = dL_dJ0 * dJ0_dy + dL_dJ2 * dJ2_dy + dL_dJ4 * dJ4_dy + dL_dJ5 * dJ5_dy
+	//        = -fy / z^2 * dL_dJ5 
 	float dL_dty = y_grad_mul * -h_y * tz2 * dL_dJ12;
+	// dL_dtz = dL_dJ0 * dJ0_dz + dL_dJ2 * dJ2_dz + dL_dJ4 * dJ4_dz + dL_dJ5 * dJ5_dz
+	//        = -fx / z^2 * dL_dJ0 + 2fx * x / z^3 * dL_dJ2 - fy / z^2 * dL_dJ4 + 2fy * y / z^3 * dL_dJ5
 	float dL_dtz = -h_x * tz2 * dL_dJ00 - h_y * tz2 * dL_dJ11 + (2 * h_x * t.x) * tz3 * dL_dJ02 + (2 * h_y * t.y) * tz3 * dL_dJ12;
+
+	// 获取深度图计算出损失关于当前idx高斯在相机坐标系下z的梯度
+	dL_dtz += dL_dviewz[idx];
 
 	// Account for transformation of mean to t
 	// t = transformPoint4x3(mean, view_matrix);
+	// R_w2c * t_w + t_w2c = t_c
+	// x_c = r0 * x_w + r1 * y_w + r2 * z_w + t0
+	// y_c = r3 * x_w + r4 * y_w + r5 * z_w + t1
+	// z_c = r6 * x_w + r7 * y_w + r8 * z_w + t2
+	// dL_dtw = dL_dtc * dtc_dtw
+	// dL_dxw = dL_dxc * dxc_dxw + dL_dyc * dyc_dxw + dL_dzc * dzc_dxw
+	//        = r0 * dL_dxc + r3 * dL_dyc + r6 * dL_dzc
+	// dL_dyw = dL_dxc * dxc_dyw + dL_dyc * dyc_dyw + dL_dzc * dzc_dyw
+	//        = r1 * dL_dxc + r4 * dL_dyc + r7 * dL_dzc
+	// dL_dzw = dL_dxc * dxc_dzw + dL_dyc * dyc_dzw + dL_dzc * dzc_dzw
+	//        = r2 * dL_dxc + r5 * dL_dyc + r8 * dL_dzc
+	// dL_dtw = [r0 r3 r6; r1 r4 r7; r2 r5 r8] * dL_dtc
+	//        = R_w2c^T * dL_dtc
 	float3 dL_dmean = transformVec4x3Transpose({ dL_dtx, dL_dty, dL_dtz }, view_matrix);
 
 	// Gradients of loss w.r.t. Gaussian means, but only the portion 
@@ -424,11 +521,16 @@ renderCUDA(
 	// 输入梯度
 	const float* __restrict__ dL_dpixels,
 	const float* __restrict__ dL_dpixels_depth,
+	// 输入，深度图每个像素对应的高斯id
+	const int* __restrict__ depth_idx,
 	// 输出4个梯度
 	float3* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dcolors)
+	float* __restrict__ dL_dcolors,
+	// 深度损失关于高斯在相机坐标系下z的梯度
+	float* __restrict__ dL_dviewz
+	)
 {
 	// We rasterize again. Compute necessary block info.
 	// 再次光栅化
@@ -479,7 +581,9 @@ renderCUDA(
 	// 初始化辅助变量，记录从后向前累积的深度
 	float accum_depth_rec = 0;
 	// 取出损失关于深度的梯度
-	float dL_dpixel_depth;
+	float dL_dpixel_depth = 0;
+	// 记录深度图中像素对应的高斯id
+	int depth_id;
 	// 对于图像范围内的thread
 	if (inside)
 	{
@@ -489,16 +593,19 @@ renderCUDA(
 			// 每行代表一张图像像素，每列代表一个通道
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
 		dL_dpixel_depth = dL_dpixels_depth[pix_id];
+
+		// 根据像素id取出对应的深度图中的高斯id
+		depth_id = depth_idx[pix_id];
 	}
 	// 初始化变量，记录上一个高斯的alpha和3通道颜色
 	float last_alpha = 0;
 	float last_color[C] = { 0 };
-	// 记录上一个高斯的深度
-	float last_depth = 0;
+	// // 记录上一个高斯的深度
+	// float last_depth = 0;
 
 	// Gradient of pixel coordinate w.r.t. normalized 
 	// screen-space viewport corrdinates (-1 to 1)
-	// 像素坐标关于归一化屏幕坐标的梯度
+	// 像素坐标关于NDC坐标的梯度
 	// 对应视口变换的过程
 	const float ddelx_dx = 0.5 * W;
 	const float ddely_dy = 0.5 * H;
@@ -556,6 +663,8 @@ renderCUDA(
 			// block内每个thread对应的pixel关于d不同
 			const float2 d = { xy.x - pixf.x, xy.y - pixf.y };
 			// 前3维 2D协方差矩阵逆的上三角，第4维 不透明度\alpha
+			// 2D Cov [a b; b c]
+			// 逆矩阵[d e; e f] + opacity
 			const float4 con_o = collected_conic_opacity[j];
 			// 2D高斯
 			// -1/2 * [dx dy]^T * [cov1 cov2; cov2 cov3] * [dx dy]
@@ -607,12 +716,23 @@ renderCUDA(
 				// 多个pixel关于同一个高斯颜色的梯度进行求和，需要原子操作
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 			}
-			// thread取出当前pixel对应的渲染深度
-			const float c_d = collected_depths[j];
-			accum_depth_rec = last_alpha * last_depth + (1.f - last_alpha) * accum_depth_rec;
-			last_depth = c_d;
-			// 设计深度损失时增加这一项
+
+			// 使用alpha-blending进行深度渲染时，需要考虑的深度损失
+			// // thread取出当前pixel对应的渲染深度
+			// const float c_d = collected_depths[j];
+			// accum_depth_rec = last_alpha * last_depth + (1.f - last_alpha) * accum_depth_rec;
+			// last_depth = c_d;
+			// // 设计深度损失时增加这一项
 			// dL_dalpha += (c_d - accum_depth_rec) * dL_ddepth;
+			
+			// median深度渲染时，需要考虑的深度损失
+			// 如果当前高斯id对应深度图中像素的高斯id
+			if (inside && global_id == depth_id)
+			{
+				// 计算深度损失
+				// 原子更新
+				atomicAdd(&(dL_dviewz[global_id]), dL_dpixel_depth);
+			}
 
 			dL_dalpha *= T;
 			// Update last alpha (to be used in the next iteration)
@@ -637,12 +757,15 @@ renderCUDA(
 			const float dG_ddely = -gdy * con_o.z - gdx * con_o.y;
 
 			// Update gradients w.r.t. 2D mean position of the Gaussian
+			// 损失关于NDC坐标系上的像素坐标的梯度
 			atomicAdd(&dL_dmean2D[global_id].x, dL_dG * dG_ddelx * ddelx_dx);
 			atomicAdd(&dL_dmean2D[global_id].y, dL_dG * dG_ddely * ddely_dy);
 
 			// Update gradients w.r.t. 2D covariance (2x2 matrix, symmetric)
-			// .x .y .z .w
+			// 关于2D Cov逆矩阵 [d, e; e, f] 的梯度
+			// .x .y .z(未使用) .w
 			atomicAdd(&dL_dconic2D[global_id].x, -0.5f * gdx * d.x * dL_dG);
+			// 关于e的梯度包括对称两部分，后续计算时需要注意计算两次
 			atomicAdd(&dL_dconic2D[global_id].y, -0.5f * gdx * d.y * dL_dG);
 			atomicAdd(&dL_dconic2D[global_id].w, -0.5f * gdy * d.y * dL_dG);
 
@@ -670,8 +793,10 @@ void BACKWARD::preprocess(
 	const glm::vec3* campos,
 	// 输入梯度，render计算出
 	const float3* dL_dmean2D,
-	// 输入梯度，render计算出
+	// 输入梯度，render计算出，对应dL_dconic2D
 	const float* dL_dconic,
+	// 输入梯度，render计算出，深度损失关于相机坐标系下z的梯度
+	const float* dL_dviewz,
 	// 输出梯度，computeCov2DCUDA
 	glm::vec3* dL_dmean3D,
 	// 输入梯度，render计算出
@@ -701,6 +826,8 @@ void BACKWARD::preprocess(
 		viewmatrix,
 		// 输入梯度，render计算出
 		dL_dconic,
+		// 输入梯度，render计算出，深度损失关于相机坐标系下z的梯度
+		dL_dviewz,
 		// 输出梯度
 		(float3*)dL_dmean3D,
 		// 输出梯度
@@ -754,11 +881,15 @@ void BACKWARD::render(
 	const float* dL_dpixels,
 	// 输入梯度，损失关于深度图的梯度，pytorch计算得到
 	const float* dL_dpixels_depth,
+	const int* depth_idx,
 	// 输出4个梯度
 	float3* dL_dmean2D,
 	float4* dL_dconic2D,
 	float* dL_dopacity,
-	float* dL_dcolors)
+	float* dL_dcolors,
+	// 深度损失关于高斯在相机坐标系下z的梯度
+	float*	dL_dviewz
+	)
 {
 	// grid block_size(16x16)整倍数
 	// block 16x16
@@ -777,10 +908,14 @@ void BACKWARD::render(
 		// 输入梯度
 		dL_dpixels,
 		dL_dpixels_depth,
+		// 输入深度图每个像素对应的高斯id
+		depth_idx,
 		// 输出4个梯度
 		dL_dmean2D,
 		dL_dconic2D,
 		dL_dopacity,
-		dL_dcolors
+		dL_dcolors,
+		// 深度损失关于高斯在相机坐标系下z的梯度
+		dL_dviewz
 		);
 }

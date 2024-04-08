@@ -79,20 +79,35 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 	// and 31 in "EWA Splatting" (Zwicker et al., 2002). 
 	// Additionally considers aspect / scaling of viewport.
 	// Transposes used to account for row-/column-major conventions.
+	// 将高斯中心从世界坐标系转换到相机坐标系
 	float3 t = transformPoint4x3(mean, viewmatrix);
 
+	// 计算水平和垂直方向的视场角tan范围，考虑有的高斯中心超出视场范围但是半径很大
 	const float limx = 1.3f * tan_fovx;
 	const float limy = 1.3f * tan_fovy;
+	// 分别计算x和y关于z的归一化坐标
 	const float txtz = t.x / t.z;
 	const float tytz = t.y / t.z;
+	// 将x和y的大小限制在视场范围内，并恢复深度
 	t.x = min(limx, max(-limx, txtz)) * t.z;
 	t.y = min(limy, max(-limy, tytz)) * t.z;
 
+	// 3DGS中像素坐标原点位于图像中心 => c_x=0 c_y=0
+	// K = 1/z*[f_x, 0, 0; 0, f_y, 0; 0, 0, 1]  
+	// 先从相机坐标系变换到图像坐标系，不进行归一化
+	// [x, y, z] => [x*f_x, y*f_y, z]
+	// 再转换到Ray space
+	// [x*f_x, y*f_y, z] => 
+	// [x*f_x/z, y*f_y/z, \sqrt((x*f_x)^2+(y*f_y)^2+z^2)]
+	// 将Cov从3D投影到2D，Jocabi矩阵第3行全部置为0
+	// 矩阵按照列优先进行存储，J^T
 	glm::mat3 J = glm::mat3(
 		focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z),
 		0.0f, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z),
 		0, 0, 0);
 
+	// 取出T_w2c的旋转部分R_w2c
+	// 矩阵按照列优先进行存储，W^T
 	glm::mat3 W = glm::mat3(
 		viewmatrix[0], viewmatrix[4], viewmatrix[8],
 		viewmatrix[1], viewmatrix[5], viewmatrix[9],
@@ -100,11 +115,13 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 
 	glm::mat3 T = W * J;
 
+	// 取出3D Cov
 	glm::mat3 Vrk = glm::mat3(
 		cov3D[0], cov3D[1], cov3D[2],
 		cov3D[1], cov3D[3], cov3D[4],
 		cov3D[2], cov3D[4], cov3D[5]);
 
+	// 计算投影后的Cov2D = J * W * Cov3D * W^T * J^T
 	glm::mat3 cov = glm::transpose(T) * glm::transpose(Vrk) * T;
 
 	// Apply low-pass filter: every Gaussian should be at least
@@ -114,7 +131,7 @@ __device__ float3 computeCov2D(const float3& mean, float focal_x, float focal_y,
 	// // det(Cov_2D)
 	// const float det_cov2d = max(1e-6, cov[0][0] * cov[1][1] - cov[0][1] * cov[0][1]); 
 
-	// 只保留前两维的上三角，增大uncertainty
+	// 增加低通滤波器，只保留Cov3D前两维的上三角，得到Cov2D
 	// Cov_2D' = Cov_2D + sI
 	cov[0][0] += 0.3f;
 	cov[1][1] += 0.3f;
@@ -214,11 +231,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		return;
 
 	// Transform point by projecting
-	// 将3D点投影到2D平面
-	// 和in_frustum中计算重复
+	// 将点从世界坐标系转换到裁剪坐标系
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
-	// 透视除法，NDC坐标
+	// 透视除法，从裁剪坐标系转换到NDC坐标系
+	// 归一化得到齐次坐标，取出x y z
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
@@ -366,8 +383,8 @@ renderCUDA(
 	float C[CHANNELS] = { 0 };
 	// 每个pixel对应的深度，Mean Depth
 	// float Depth = 0.0f;
-	// Median Depth，hack setting max_depth to 15
-	float Depth = 20.0f;
+	// Median Depth，hack setting max_depth to 20
+	float Depth = 50.0f;
 	int Depth_median_idx = 0;
 	
 

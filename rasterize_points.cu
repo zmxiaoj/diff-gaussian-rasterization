@@ -45,7 +45,9 @@ RasterizeGaussiansCUDA(
 	const torch::Tensor& rotations,
 	const float scale_modifier,
 	const torch::Tensor& cov3D_precomp,
+	// 世界坐标系到相机坐标系的变换矩阵T_w2c
 	const torch::Tensor& viewmatrix,
+	// 世界坐标系到裁剪坐标系的变换矩阵T_w2p
 	const torch::Tensor& projmatrix,
 	const float tan_fovx, 
 	const float tan_fovy,
@@ -144,6 +146,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const float tan_fovy,
     const torch::Tensor& dL_dout_color,
 	const torch::Tensor& dL_dout_depth,
+	const torch::Tensor& depth_idx,
 	const torch::Tensor& sh,
 	const int degree,
 	const torch::Tensor& campos,
@@ -174,7 +177,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   torch::Tensor dL_dsh = torch::zeros({P, M, 3}, means3D.options());
   torch::Tensor dL_dscales = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options());
-  
+  // 深度损失关于高斯在相机坐标系下z的梯度
+  torch::Tensor dL_dviewz = torch::zeros({P, 1}, means3D.options());
+
   if(P != 0)
   {  
 	  // contiguous()返回一个内存连续的tensor
@@ -200,10 +205,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  reinterpret_cast<char*>(imageBuffer.contiguous().data_ptr()),
 	  dL_dout_color.contiguous().data<float>(),
 	  dL_dout_depth.contiguous().data<float>(),
+	  // 输入depth_idx
+	  depth_idx.contiguous().data<int>(),
 	  dL_dmeans2D.contiguous().data<float>(),
 	  dL_dconic.contiguous().data<float>(),  
 	  dL_dopacity.contiguous().data<float>(),
 	  dL_dcolors.contiguous().data<float>(),
+	  // 深度损失关于高斯在相机坐标系下z的梯度
+	  dL_dviewz.contiguous().data<float>(),
 	  dL_dmeans3D.contiguous().data<float>(),
 	  dL_dcov3D.contiguous().data<float>(),
 	  dL_dsh.contiguous().data<float>(),

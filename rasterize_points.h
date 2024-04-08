@@ -53,6 +53,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const float tan_fovy,
     const torch::Tensor& dL_dout_color,
 	const torch::Tensor& dL_dout_depth,
+	const torch::Tensor& depth_idx,
 	const torch::Tensor& sh,
 	const int degree,
 	const torch::Tensor& campos,

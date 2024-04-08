@@ -265,6 +265,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const bool prefiltered,
 	float* out_color,
 	float* out_depth,
+	// 输出记录深度图每个像素对应的高斯idx
 	int* out_depth_idx,
 	int* radii,
 	bool debug)
@@ -452,6 +453,7 @@ void CudaRasterizer::Rasterizer::backward(
 	// 输入变量，pytorch自动计算的梯度
 	const float* dL_dpix,
 	const float* dL_dpix_depth,
+	const int* depth_idx,
 	// 输出变量，cuda计算的梯度
 	// render返回
 	float* dL_dmean2D,
@@ -461,6 +463,8 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dopacity,
 	// render返回
 	float* dL_dcolor,
+	// render返回，深度损失关于高斯在相机坐标系下z的梯度
+	float* dL_dviewz,
 	// preprocess返回
 	float* dL_dmean3D,
 	// preprocess返回
@@ -514,11 +518,14 @@ void CudaRasterizer::Rasterizer::backward(
 		// 输入变量
 		dL_dpix,
 		dL_dpix_depth,
+		depth_idx,
 		// render 输出4个梯度
 		(float3*)dL_dmean2D,
 		(float4*)dL_dconic,
 		dL_dopacity,
-		dL_dcolor), debug)
+		dL_dcolor,
+		// 深度损失关于相机坐标系下z的梯度
+		dL_dviewz), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
@@ -542,6 +549,8 @@ void CudaRasterizer::Rasterizer::backward(
 		(float3*)dL_dmean2D,
 		// render计算出，输入preprocess
 		dL_dconic,
+		// render计算出，输入preprocess，深度损失关于相机坐标系下z的梯度
+		dL_dviewz,
 		// 输出
 		(glm::vec3*)dL_dmean3D,
 		// render计算出，输入preprocess

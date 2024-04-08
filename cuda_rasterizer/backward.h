@@ -34,10 +34,13 @@ namespace BACKWARD
 		const uint32_t* n_contrib,
 		const float* dL_dpixels,
 		const float* dL_ddepths,
+		const int* depth_idx,
 		float3* dL_dmean2D,
 		float4* dL_dconic2D,
 		float* dL_dopacity,
-		float* dL_dcolors);
+		float* dL_dcolors,
+		// 深度损失关于相机坐标系下z的梯度
+		float* dL_dviewz);
 
 	void preprocess(
 		int P, int D, int M,
@@ -56,6 +59,7 @@ namespace BACKWARD
 		const glm::vec3* campos,
 		const float3* dL_dmean2D,
 		const float* dL_dconics,
+		const float* dL_dviewz,
 		glm::vec3* dL_dmeans,
 		float* dL_dcolor,
 		float* dL_dcov3D,
